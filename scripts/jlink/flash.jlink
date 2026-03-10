@@ -1,0 +1,11 @@
+device STM32F103VE
+if SWD
+speed 4000
+Reset           
+halt      
+sleep 10      
+loadbin build/zephyr/zephyr.bin 0x08000000 
+verifybin build/zephyr/zephyr.bin 0x08000000 
+reset              
+go                  
+exit             

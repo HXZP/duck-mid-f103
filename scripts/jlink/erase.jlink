@@ -1,0 +1,6 @@
+device STM32H723VG
+if SWD
+speed 4000           
+halt            
+erase           
+exit         
