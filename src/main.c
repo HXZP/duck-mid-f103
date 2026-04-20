@@ -1,99 +1,124 @@
+/**
+ * @file main.c
+ * @brief CAN 协议多电机主机侧示例入口。
+ */
+#include <inttypes.h>
+
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/drivers/led_strip.h>
+#include <zephyr/sys/util.h>
 
-LOG_MODULE_REGISTER(ws2812, LOG_LEVEL_INF);
+#include "can_protocol.h"
+#include "led/led.h"
 
-// get ws2812 node
-#define LED_WS2812_NODE DT_NODELABEL(rgb_led)
+LOG_MODULE_REGISTER(main_module, LOG_LEVEL_INF);
 
-/* WS2812 device */
-static const struct device *ws2812_dev;
-static struct led_rgb *pixels;
+/** @brief 电机状态日志打印周期，单位毫秒。 */
+#define LOG_INTERVAL_MS 1000
+
+/** @brief 主循环休眠周期，单位毫秒。 */
+#define MAIN_LOOP_SLEEP_MS 20
+
+/** @brief 示例中的 5 台电机节点 ID。 */
+static const uint8_t motor_node_ids[] = {
+	0x10,
+	0x11,
+	0x12,
+	0x13,
+	0x14,
+};
 
 /**
- * @brief Initialize the WS2812 LED strip
+ * @brief 打印电机状态。
+ * @return void
+ * @note 使用协议层快照，避免直接读取实时状态。
  */
-void Init_ws2812(void)
+static void log_motor_states(void)
 {
-    size_t num_leds;
+	size_t i;
+	struct can_protocol_state state;
 
-    ws2812_dev = DEVICE_DT_GET(LED_WS2812_NODE);
-    __ASSERT(!device_is_ready(ws2812_dev), "Failed to get WS2812 device");
+	can_protocol_copy_state(&state);
 
-    num_leds = led_strip_length(ws2812_dev);
-    __ASSERT(num_leds != 0, "WS2812 device has zero length");
+	for (i = 0; i < state.motor_count; i++)
+	{
+		const struct can_protocol_motor_state *motor = &state.motors[i];
 
-    /* Allocate memory for LED pixels */
-    pixels = k_malloc(sizeof(struct led_rgb) * num_leds);
-    __ASSERT(pixels != NULL, "Failed to allocate memory for LED pixels");
+		LOG_INF("m%u node=0x%02x pending=%d req_en=%d mode=%u "
+			"tgt_speed=%" PRId32 " tgt_pos=%" PRId32
+			" speed=%" PRId32 " pos=%" PRId32
+			" ack=%s tx=%u rx=%u",
+			(unsigned int)i,
+			motor->node_id,
+			motor->pending_node_id_change,
+			motor->requested_enable,
+			motor->requested_mode,
+			motor->requested_speed_target_mrad_s,
+			motor->requested_position_target_mrad,
+			motor->speed_valid ? motor->speed_mrad_s : 0,
+			motor->position_valid ? motor->position_mrad : 0,
+			motor->ack_valid ? "yes" : "no",
+			motor->tx_count,
+			motor->rx_count);
+	}
 }
 
 /**
- * @brief Set LED color
+ * @brief 示例主循环。
+ * @return int 始终返回 0。
+ * @note 协议解析在线程中自动完成，主循环负责应用层初始化和日志打印。
  */
-int set_Led_color(uint8_t index, uint8_t red, uint8_t green, uint8_t blue)
-{
-    size_t num_leds;
-    int ret;
-
-    num_leds = led_strip_length(ws2812_dev);
-
-    if (index >= num_leds) {
-        LOG_ERR("LED index: %d out of range: %d", index, num_leds);
-        return -EINVAL;
-    }
-
-    pixels[index].r = red;
-    pixels[index].g = green;
-    pixels[index].b = blue;
-
-    ret = led_strip_update_rgb(ws2812_dev, pixels, num_leds);
-    if (ret < 0) {
-        LOG_ERR("Failed to update LED color: %d", ret);
-        return ret;
-    }
-    return 0;
-}
-
 int main(void)
 {
-    LOG_INF("Hello, Duck Bot!");
-    Init_ws2812();
+	size_t i;
+	int ret;
+	int64_t last_log_ms = 0;
 
-    size_t num_leds = led_strip_length(ws2812_dev);
-    uint16_t hue = 0;
+	LOG_INF("Hello, Duck!!!");
 
-    while (1) {
-        /* Convert HSV to RGB for rainbow effect */
-        for (size_t i = 0; i < num_leds; i++) {
-            uint16_t current_hue = (hue + i * 360 / num_leds) % 360;
-            uint8_t r, g, b;
+	ret = led_init();
 
-            /* HSV to RGB conversion */
-            uint16_t h = current_hue / 60;
-            uint8_t f = (current_hue % 60) * 255 / 60;
-            uint8_t p = 0;
-            uint8_t q = 255 - f;
-            uint8_t t = f;
+	if (ret < 0)
+	{
+		LOG_WRN("LED init failed: %d", ret);
+	}
+	else
+	{
+		led_boot_blink();
+	}
 
-            switch (h) {
-                case 0: r = 255; g = t;   b = p; break;
-                case 1: r = q;   g = 255; b = p; break;
-                case 2: r = p;   g = 255; b = t; break;
-                case 3: r = p;   g = q;   b = 255; break;
-                case 4: r = t;   g = p;   b = 255; break;
-                case 5: r = 255; g = p;   b = q; break;
-                default: r = 0; g = 0; b = 0; break;
-            }
+	ret = can_protocol_init(motor_node_ids, ARRAY_SIZE(motor_node_ids));
 
-            set_Led_color(i, r, g, b);
-        }
+	if (ret < 0)
+	{
+		LOG_ERR("CAN protocol init failed: %d", ret);
+		return 0;
+	}
 
-        hue = (hue + 5) % 360;  /* Rotate hue */
-        k_sleep(K_MSEC(50));    /* Delay for smooth animation */
-    }
+	for (i = 0; i < ARRAY_SIZE(motor_node_ids); i++)
+	{
+		ret = can_protocol_request_node_id(motor_node_ids[i]);
 
-    return 0;
+		if (ret < 0)
+		{
+			LOG_WRN("Initial node-id request failed for node 0x%02x: %d",
+				motor_node_ids[i],
+				ret);
+		}
+	}
+
+	while (1)
+	{
+		int64_t now_ms = k_uptime_get();
+
+		if ((now_ms - last_log_ms) >= LOG_INTERVAL_MS)
+		{
+			last_log_ms = now_ms;
+			log_motor_states();
+		}
+
+		k_sleep(K_MSEC(MAIN_LOOP_SLEEP_MS));
+	}
+
+	return 0;
 }
