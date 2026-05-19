@@ -7,6 +7,7 @@
 
 #include "led/led.h"
 #include "motor/motor.h"
+#include "uart_command.h"
 
 LOG_MODULE_REGISTER(main_module, LOG_LEVEL_INF);
 
@@ -172,6 +173,13 @@ int main(void)
     else
     {
         led_boot_blink();
+    }
+
+    ret = uart_command_init();
+
+    if (ret < 0)
+    {
+        LOG_WRN("UART command init failed: %d", ret);
     }
 
     ret = motor_init();
