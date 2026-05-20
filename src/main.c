@@ -41,6 +41,10 @@ LOG_MODULE_REGISTER(main_module, LOG_LEVEL_INF);
 /** @brief 控制命令间隔，单位毫秒。 */
 #define COMMAND_SETTLE_MS 100
 
+/** @brief 串口调试消息发送周期，单位毫秒。 */
+
+/** @brief 串口调试消息内容。 */
+
 /**
  * @brief 执行默认电机的演示流程。
  * @param motor 电机对象指针。
@@ -182,32 +186,30 @@ int main(void)
         LOG_WRN("UART command init failed: %d", ret);
     }
 
-    ret = motor_init();
+    // ret = motor_init();
 
-    if (ret < 0)
-    {
-        LOG_ERR("Motor init failed: %d", ret);
-        return 0;
-    }
+    // if (ret < 0)
+    // {
+    //     LOG_ERR("Motor init failed: %d", ret);
+    //     return 0;
+    // }
 
-    demo_motor = motor_get_default();
+    // demo_motor = motor_get_default();
 
-    ret = app_run_motor_demo(demo_motor);
+    // ret = app_run_motor_demo(demo_motor);
 
-    if (ret < 0)
-    {
-        LOG_WRN("Motor demo execution failed: %d", ret);
-    }
+    // if (ret < 0)
+    // {
+    //     LOG_WRN("Motor demo execution failed: %d", ret);
+    // }
 
     while (1)
     {
-        int64_t now_ms = k_uptime_get();
-
-        if ((now_ms - last_log_ms) >= LOG_INTERVAL_MS)
-        {
-            last_log_ms = now_ms;
-            motor_log_state(demo_motor);
-        }
+        // if ((now_ms - last_log_ms) >= LOG_INTERVAL_MS)
+        // {
+        //     last_log_ms = now_ms;
+        //     motor_log_state(demo_motor);
+        // }
 
         k_sleep(K_MSEC(MAIN_LOOP_SLEEP_MS));
     }

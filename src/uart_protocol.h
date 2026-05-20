@@ -93,6 +93,14 @@ void uart_protocol_deinit(void);
  * @param payload_len 负载长度，单位字节。
  * @return int 0 表示成功，负值表示失败。
  */
+/**
+ * @brief 发送串口原始调试数据。
+ * @param data 待发送数据指针。
+ * @param len 待发送数据长度，单位字节。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int uart_protocol_send_raw(const uint8_t *data, uint16_t len);
+
 int uart_protocol_send_frame(uint16_t cmd,
                              uint16_t seq,
                              uint8_t flags,

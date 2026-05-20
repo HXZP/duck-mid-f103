@@ -415,6 +415,8 @@ static void uart_protocol_irq_callback(const struct device *dev, void *user_data
             continue;
         }
 
+        LOG_HEXDUMP_INF(data, (size_t)rx_len, "UART rx raw");
+
         if (ring_buf_put(&uart_protocol_rx_ring, data, (uint32_t)rx_len) < (uint32_t)rx_len)
         {
             LOG_WRN("UART rx ring overflow");
@@ -445,6 +447,8 @@ static void uart_protocol_thread_entry(void *arg1, void *arg2, void *arg3)
 
         while (ring_buf_get(&uart_protocol_rx_ring, &byte, 1U) == 1U)
         {
+            /* 串口链路调试：收到的原始字节立即回发给 RK。 */
+            uart_poll_out(uart_protocol_dev, byte);
             uart_protocol_parse_byte(&uart_protocol_parser_data, byte);
         }
     }
@@ -529,6 +533,34 @@ void uart_protocol_deinit(void)
     ring_buf_reset(&uart_protocol_rx_ring);
     uart_protocol_parser_reset(&uart_protocol_parser_data);
     k_mutex_unlock(&uart_protocol_mutex);
+}
+
+/**
+ * @brief 发送串口原始调试数据。
+ * @param data 待发送数据指针。
+ * @param len 待发送数据长度，单位字节。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int uart_protocol_send_raw(const uint8_t *data, uint16_t len)
+{
+    uint16_t i;
+
+    if ((data == NULL) && (len > 0U))
+    {
+        return -EINVAL;
+    }
+
+    if (!device_is_ready(uart_protocol_dev))
+    {
+        return -ENODEV;
+    }
+
+    for (i = 0U; i < len; i++)
+    {
+        uart_poll_out(uart_protocol_dev, data[i]);
+    }
+
+    return 0;
 }
 
 int uart_protocol_send_frame(uint16_t cmd,
