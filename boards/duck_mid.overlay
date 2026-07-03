@@ -1,3 +1,49 @@
 &can1 {
 	bitrate = <500000>;
 };
+
+&usart1 {
+	current-speed = <1000000>;
+};
+
+/ {
+	can_protocol0: can-protocol {
+		compatible = "hxzp,can-protocol";
+		status = "okay";
+		can = <&can1>;
+		bitrate = <500000>;
+		tx-queue-len = <16>;
+		rx-queue-len = <16>;
+	};
+
+	uart_protocol0: uart-protocol {
+		compatible = "hxzp,uart-protocol";
+		status = "okay";
+		uart = <&usart1>;
+		rx-ring-size = <256>;
+	};
+
+	motor_pyr: gen-motor {
+		compatible = "hxzp,gen-motor";
+		status = "okay";
+		can-protocol = <&can_protocol0>;
+
+		pitch {
+			motor-name = "pitch";
+			node-id = <0x01>;
+			report-period-ms = <10>;
+		};
+
+		yaw {
+			motor-name = "yaw";
+			node-id = <0x02>;
+			report-period-ms = <10>;
+		};
+
+		roll {
+			motor-name = "roll";
+			node-id = <0x03>;
+			report-period-ms = <10>;
+		};
+	};
+};

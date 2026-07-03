@@ -45,7 +45,7 @@ static bool led_ready;
  */
 static void led_clear_pixels(void)
 {
-	memset(led_pixels, 0, sizeof(led_pixels));
+    memset(led_pixels, 0, sizeof(led_pixels));
 }
 
 /**
@@ -57,14 +57,14 @@ static void led_clear_pixels(void)
  */
 static void led_fill_all(uint8_t red, uint8_t green, uint8_t blue)
 {
-	size_t i;
+    size_t i;
 
-	for (i = 0; i < ARRAY_SIZE(led_pixels); i++)
-	{
-		led_pixels[i].r = red;
-		led_pixels[i].g = green;
-		led_pixels[i].b = blue;
-	}
+    for (i = 0U; i < ARRAY_SIZE(led_pixels); i++)
+    {
+        led_pixels[i].r = red;
+        led_pixels[i].g = green;
+        led_pixels[i].b = blue;
+    }
 }
 
 /**
@@ -73,12 +73,12 @@ static void led_fill_all(uint8_t red, uint8_t green, uint8_t blue)
  */
 static int led_flush(void)
 {
-	if (!led_ready)
-	{
-		return -ENODEV;
-	}
+    if (!led_ready)
+    {
+        return -ENODEV;
+    }
 
-	return led_strip_update_rgb(led_rgb_dev, led_pixels, ARRAY_SIZE(led_pixels));
+    return led_strip_update_rgb(led_rgb_dev, led_pixels, ARRAY_SIZE(led_pixels));
 }
 
 /**
@@ -87,20 +87,20 @@ static int led_flush(void)
  */
 static void led_turn_off(void)
 {
-	int ret;
+    int ret;
 
-	if (!led_ready)
-	{
-		return;
-	}
+    if (!led_ready)
+    {
+        return;
+    }
 
-	led_clear_pixels();
-	ret = led_flush();
+    led_clear_pixels();
+    ret = led_flush();
 
-	if (ret < 0)
-	{
-		led_ready = false;
-	}
+    if (ret < 0)
+    {
+        led_ready = false;
+    }
 }
 
 /**
@@ -109,24 +109,24 @@ static void led_turn_off(void)
  */
 int led_init(void)
 {
-	int ret;
+    int ret;
 
-	if (!device_is_ready(led_rgb_dev))
-	{
-		return -ENODEV;
-	}
+    if (!device_is_ready(led_rgb_dev))
+    {
+        return -ENODEV;
+    }
 
-	led_ready = true;
-	led_clear_pixels();
-	ret = led_flush();
+    led_ready = true;
+    led_clear_pixels();
+    ret = led_flush();
 
-	if (ret < 0)
-	{
-		led_ready = false;
-		return ret;
-	}
+    if (ret < 0)
+    {
+        led_ready = false;
+        return ret;
+    }
 
-	return 0;
+    return 0;
 }
 
 /**
@@ -135,35 +135,35 @@ int led_init(void)
  */
 void led_boot_blink(void)
 {
-	size_t i;
-	int ret;
+    size_t i;
+    int ret;
 
-	if (!led_ready)
-	{
-		return;
-	}
+    if (!led_ready)
+    {
+        return;
+    }
 
-	for (i = 0; i < LED_BOOT_BLINK_COUNT; i++)
-	{
-		led_fill_all(LED_WHITE_BRIGHTNESS,
-			     LED_WHITE_BRIGHTNESS,
-			     LED_WHITE_BRIGHTNESS);
-		ret = led_flush();
+    for (i = 0U; i < LED_BOOT_BLINK_COUNT; i++)
+    {
+        led_fill_all(LED_WHITE_BRIGHTNESS,
+                     LED_WHITE_BRIGHTNESS,
+                     LED_WHITE_BRIGHTNESS);
+        ret = led_flush();
 
-		if (ret < 0)
-		{
-			led_ready = false;
-			return;
-		}
+        if (ret < 0)
+        {
+            led_ready = false;
+            return;
+        }
 
-		k_sleep(K_MSEC(LED_BOOT_ON_MS));
-		led_turn_off();
+        k_sleep(K_MSEC(LED_BOOT_ON_MS));
+        led_turn_off();
 
-		if (!led_ready)
-		{
-			return;
-		}
+        if (!led_ready)
+        {
+            return;
+        }
 
-		k_sleep(K_MSEC(LED_BOOT_OFF_MS));
-	}
+        k_sleep(K_MSEC(LED_BOOT_OFF_MS));
+    }
 }
