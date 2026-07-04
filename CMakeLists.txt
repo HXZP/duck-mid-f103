@@ -16,4 +16,5 @@ file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
 
 list(FILTER APP_SOURCES EXCLUDE REGEX ".*/src/can_protocol\\.c$")
 target_sources(app PRIVATE
-    ${APP_SOURCES})
+    ${APP_SOURCES}
+)

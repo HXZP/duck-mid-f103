@@ -1,17 +1,16 @@
 ﻿# CAN 协议说明
 
-> 文档版本：`v0.2.0`
+> 文档版本：`v0.3.0`
 >
 > 更新日期：`2026-07-04`
->
-> 适用主控固件：`duck-mid-f103 0.2.0`
 
 ## 修订记录
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
-| `v0.2.0` | `2026-07-04` | 补充 `can-protocol` 与 `gen-motor` driver 分层、CAN 发送队列、自动重传、三电机对象映射和主控固件版本说明 |
-| `v0.1.0` | 初始版本 | 定义电机管理命令、普通控制命令、PID 命令、主动上报、OTA 准入和 Flash 布局 |
+| `v0.3.0` | `2026-07-04` | 电机主动上报改为单帧同时携带位置和速度；mid 端 gen-motor driver 同步解析新格式 |
+| `v0.2.0` | `2026-07-04` | CAN 协议改为 Zephyr driver，补充电机注册、主动上报、OTA 和管理命令说明 |
+| `v0.1.0` | 初始版本 | 提供基础 CAN 控制命令说明 |
 
 ## 1. 概述
 
@@ -43,63 +42,14 @@
 
 管理节点固定使用 `node_id = 0x7E`。
 
-### 2.1 当前工程实现
-
-`duck-mid-f103` 当前使用 `hxzp,can-protocol` 作为 CAN 传输层 driver，使用 `hxzp,gen-motor` 作为电机业务 driver。`gen-motor` 挂载在 `can-protocol` 下面，CAN 收发队列、底层 CAN 过滤器和接收分发由 `can-protocol` 统一管理，电机命令和电机状态缓存由 `gen-motor` 管理。
-
-当前设备树配置如下：
-
-```dts
-can_protocol0: can-protocol {
-	compatible = "hxzp,can-protocol";
-	status = "okay";
-	can = <&can1>;
-	bitrate = <500000>;
-	tx-queue-len = <16>;
-	rx-queue-len = <16>;
-};
-
-motor_pyr: gen-motor {
-	compatible = "hxzp,gen-motor";
-	status = "okay";
-	can-protocol = <&can_protocol0>;
-
-	pitch {
-		motor-name = "pitch";
-		node-id = <0x01>;
-		report-period-ms = <10>;
-	};
-
-	yaw {
-		motor-name = "yaw";
-		node-id = <0x02>;
-		report-period-ms = <10>;
-	};
-
-	roll {
-		motor-name = "roll";
-		node-id = <0x03>;
-		report-period-ms = <10>;
-	};
-};
-```
-
-当前主控侧注册的电机对象：
-
-| DTS 节点 | 电机名 | 业务节点 ID | 默认上报周期 |
-| --- | --- | --- | --- |
-| `pitch` | `pitch` | `0x01` | `10ms` |
-| `yaw` | `yaw` | `0x02` | `10ms` |
-| `roll` | `roll` | `0x03` | `10ms` |
-
-`can-protocol` 发送采用低优先级发送线程和队列，业务 driver 调用发送接口时只入队，不在调用线程内阻塞等待总线发送完成。底层 CAN 控制器使用正常模式，自动重传开启，不使用单次发送模式。
-
 ## 3. 通用帧格式
 
 | 字节 | 含义 |
 | --- | --- |
 | Byte0 | 命令码 |
 | Byte1~Byte7 | 命令参数 |
+
+电机主动上报帧不使用该通用命令格式，具体格式见第 8 节。
 
 应答帧格式：
 
@@ -293,13 +243,11 @@ PID 参数编号：
 | Byte3 | 次版本号 |
 | Byte4 | 修订版本号 |
 
-当前电机端 App 初始版本为 `1.0.0`：
+当前初始版本为 `1.0.0`：
 
 ```text
 DATA = 22 00 01 00 00 00 00 00
 ```
-
-注意：这里的 `1.0.0` 是电机固件通过 CAN `0x22` 返回的电机端 App 版本，不是 `duck-mid-f103` 主控固件版本。主控固件版本通过 UART `GET_VERSION` 命令读取，当前为 `duck-mid-f103 0.2.0`。
 
 设置电机主动上报配置 `0x23`：
 
@@ -307,7 +255,7 @@ DATA = 22 00 01 00 00 00 00 00
 | --- | --- |
 | Byte0 | `0x23` |
 | Byte1 | 上报使能，`0 = 关闭`，`1 = 打开` |
-| Byte2~Byte3 | 上报周期，`uint16`，单位：毫秒，范围 `10~60000` |
+| Byte2~Byte3 | 上报周期，`uint16`，单位：毫秒，范围 `1~60000` |
 | Byte4~Byte7 | 保留 |
 
 读取电机主动上报配置 `0x24`：
@@ -388,10 +336,10 @@ FOC 基础配置参数编号：
 
 电机主动上报默认关闭，默认周期为 `10ms`。已配置电机只有在 `0x23` 打开主动上报后，才会按配置周期上报位置和速度：
 
-| 命令码 | 含义 |
+| 字节 | 含义 |
 | --- | --- |
-| `0x80` | 位置上报，Byte1~Byte4 为 `int32`，单位：mrad |
-| `0x81` | 速度上报，Byte1~Byte4 为 `int32`，单位：mrad/s |
+| Byte0~Byte3 | 当前位置，`int32`，单位：mrad |
+| Byte4~Byte7 | 当前速度，`int32`，单位：mrad/s |
 
 未配置电机只发送管理发现上报，不发送位置和速度上报。
 
@@ -427,8 +375,6 @@ OTA 响应 = 0x500 + node_id
 ```
 
 多台未配置电机同时位于总线时，必须先通过 `0x27E` 收集 `UID32`，再通过 `0x61` 识别目标，最后通过 `0x62 + UID32` 配置唯一业务节点 ID。禁止直接对未配置管理节点 `0x7E` 发起 OTA，避免多台电机同时进入 Boot 并争用 `0x57E` 响应帧。
-
-主控侧 `gen-motor` driver 提供 OTA 状态接口。进入 OTA 状态时，driver 会关闭对应电机的主动上报；退出 OTA 状态时，只恢复进入 OTA 前的主动上报配置，不恢复其他运行状态。
 
 ## 12. Flash 存储布局
 

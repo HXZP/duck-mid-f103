@@ -31,19 +31,19 @@
 		pitch {
 			motor-name = "pitch";
 			node-id = <0x01>;
-			report-period-ms = <10>;
+			report-period-ms = <2>;
 		};
 
 		yaw {
 			motor-name = "yaw";
 			node-id = <0x02>;
-			report-period-ms = <10>;
+			report-period-ms = <2>;
 		};
 
 		roll {
 			motor-name = "roll";
 			node-id = <0x03>;
-			report-period-ms = <10>;
+			report-period-ms = <2>;
 		};
 	};
 };
