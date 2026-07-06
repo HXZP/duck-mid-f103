@@ -5,6 +5,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "gimbal.h"
 #include "led.h"
 #include "motor.h"
 #include "uart_command.h"
@@ -48,6 +49,13 @@ int main(void)
     if (ret < 0)
     {
         LOG_WRN("Motor init failed: %d", ret);
+    }
+
+    ret = gimbal_init();
+
+    if (ret < 0)
+    {
+        LOG_WRN("Gimbal init failed: %d", ret);
     }
 
     while (1)
