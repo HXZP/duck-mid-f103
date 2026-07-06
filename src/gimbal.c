@@ -628,6 +628,71 @@ static void gimbal_axis_output_zero_current(Gimbal_Axis_t *axis)
 }
 
 /**
+ * @brief 清除单轴控制目标和 PID 状态。
+ * @param axis 云台单轴对象。
+ * @return void
+ */
+static void gimbal_axis_clear_control_state(Gimbal_Axis_t *axis)
+{
+    if (axis == NULL)
+    {
+        return;
+    }
+
+    axis->target_mrad = 0;
+    axis->target_valid = false;
+    gimbal_pid_reset(&axis->position_pid);
+    gimbal_pid_reset(&axis->speed_pid);
+}
+
+/**
+ * @brief 关闭单轴电机输出并清除输出状态。
+ * @param axis 云台单轴对象。
+ * @return int 0 表示成功，负值表示失败。
+ */
+static int gimbal_axis_disable_output(Gimbal_Axis_t *axis)
+{
+    int first_ret = 0;
+    int ret;
+
+    if (axis == NULL)
+    {
+        return -EINVAL;
+    }
+
+    if (axis->motor == NULL)
+    {
+        return -ENODEV;
+    }
+
+    ret = gen_motor_set_current_target(axis->motor, 0);
+
+    if (ret < 0)
+    {
+        first_ret = ret;
+    }
+    else
+    {
+        axis->last_current_target = 0;
+    }
+
+    ret = gen_motor_set_run_mode(axis->motor, false, GEN_MOTOR_CONTROL_MODE_CURRENT);
+
+    if ((ret < 0) && (first_ret == 0))
+    {
+        first_ret = ret;
+    }
+
+    if (ret == 0)
+    {
+        axis->last_current_target = 0;
+        axis->current_mode_requested = false;
+    }
+
+    return first_ret;
+}
+
+/**
  * @brief 从电机状态获取位置反馈。
  * @param axis 轴对象。
  * @param motor_state 电机状态快照。
@@ -720,7 +785,9 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
 
     if (ret < 0)
     {
+        k_mutex_lock(&controller->lock, K_FOREVER);
         gimbal_axis_output_zero_current(axis);
+        k_mutex_unlock(&controller->lock);
         return;
     }
 
@@ -732,11 +799,11 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
                                                        &motor_state,
                                                        now_ms,
                                                        &feedback_position_mrad);
-    k_mutex_unlock(&controller->lock);
 
     if ((!target_valid) || (!feedback_valid) || (!motor_state.speed_valid))
     {
         gimbal_axis_output_zero_current(axis);
+        k_mutex_unlock(&controller->lock);
         return;
     }
 
@@ -744,6 +811,7 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
 
     if (ret < 0)
     {
+        k_mutex_unlock(&controller->lock);
         return;
     }
 
@@ -761,6 +829,8 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
     {
         axis->last_current_target = current_target;
     }
+
+    k_mutex_unlock(&controller->lock);
 }
 
 /**
@@ -828,6 +898,46 @@ static int gimbal_controller_set_rpy_target(Gimbal_Controller_t *controller,
     k_mutex_unlock(&controller->lock);
 
     return 0;
+}
+
+/**
+ * @brief 关闭云台输出并清除控制目标。
+ * @param controller 云台控制器对象。
+ * @return int 0 表示成功，负值表示失败。
+ */
+static int gimbal_controller_disable(Gimbal_Controller_t *controller)
+{
+    int first_ret = 0;
+    int ret;
+    size_t i;
+
+    if (!gimbal_controller_is_ready(controller))
+    {
+        return -ENODEV;
+    }
+
+    k_mutex_lock(&controller->lock, K_FOREVER);
+
+    for (i = 0U; i < controller->config->axis_count; i++)
+    {
+        gimbal_axis_clear_control_state(&controller->axes[i]);
+    }
+
+    controller->target_source = GIMBAL_TARGET_SOURCE_UNKNOWN;
+
+    for (i = 0U; i < controller->config->axis_count; i++)
+    {
+        ret = gimbal_axis_disable_output(&controller->axes[i]);
+
+        if ((ret < 0) && (first_ret == 0))
+        {
+            first_ret = ret;
+        }
+    }
+
+    k_mutex_unlock(&controller->lock);
+
+    return first_ret;
 }
 
 /**
@@ -1013,6 +1123,17 @@ int gimbal_set_rpy_target(int32_t roll_mrad,
                                             pitch_mrad,
                                             yaw_mrad,
                                             source);
+}
+
+/**
+ * @brief 关闭云台输出并清除控制目标和 PID 状态。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int gimbal_disable(void)
+{
+    Gimbal_Controller_t *controller = &gimbal_controller;
+
+    return gimbal_controller_disable(controller);
 }
 
 /**

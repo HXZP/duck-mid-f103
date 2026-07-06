@@ -45,6 +45,12 @@ int gimbal_set_rpy_target(int32_t roll_mrad,
                           enum gimbal_target_source source);
 
 /**
+ * @brief 关闭云台输出并清除控制目标和 PID 状态。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int gimbal_disable(void);
+
+/**
  * @brief 设置 RK 下发的当前姿态角。
  * @param roll_mrad 当前 Roll 姿态角，单位 mrad。
  * @param pitch_mrad 当前 Pitch 姿态角，单位 mrad。
