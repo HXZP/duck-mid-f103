@@ -57,10 +57,28 @@ int gimbal_disable(void);
  * @param yaw_mrad 当前 Yaw 姿态角，单位 mrad。
  * @return int 0 表示成功，负值表示失败。
  * @note Roll 和 Pitch 位置环使用该姿态反馈；Yaw 位置环使用电机角度反馈。
+ * @note 该接口不更新角速度反馈，速度源配置为 IMU 时请使用 gimbal_set_imu_feedback。
  */
 int gimbal_set_attitude_feedback(int32_t roll_mrad,
                                  int32_t pitch_mrad,
                                  int32_t yaw_mrad);
+
+/**
+ * @brief 设置 IMU 姿态角和角速度反馈。
+ * @param roll_mrad 当前 Roll 姿态角，单位 mrad。
+ * @param pitch_mrad 当前 Pitch 姿态角，单位 mrad。
+ * @param yaw_mrad 当前 Yaw 姿态角，单位 mrad。
+ * @param roll_speed_mrad_s 当前 Roll 角速度，单位 mrad/s。
+ * @param pitch_speed_mrad_s 当前 Pitch 角速度，单位 mrad/s。
+ * @param yaw_speed_mrad_s 当前 Yaw 角速度，单位 mrad/s。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int gimbal_set_imu_feedback(int32_t roll_mrad,
+                            int32_t pitch_mrad,
+                            int32_t yaw_mrad,
+                            int32_t roll_speed_mrad_s,
+                            int32_t pitch_speed_mrad_s,
+                            int32_t yaw_speed_mrad_s);
 
 #ifdef __cplusplus
 }

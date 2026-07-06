@@ -52,12 +52,29 @@ typedef enum
 typedef enum
 {
     /**< 使用 RK Roll 姿态反馈。 */
-    GIMBAL_FEEDBACK_ATTITUDE_ROLL = 0,
+    GIMBAL_POSITION_FEEDBACK_ATTITUDE_ROLL = 0,
     /**< 使用 RK Pitch 姿态反馈。 */
-    GIMBAL_FEEDBACK_ATTITUDE_PITCH,
+    GIMBAL_POSITION_FEEDBACK_ATTITUDE_PITCH,
+    /**< 使用 RK Yaw 姿态反馈。 */
+    GIMBAL_POSITION_FEEDBACK_ATTITUDE_YAW,
     /**< 使用电机角度反馈。 */
-    GIMBAL_FEEDBACK_MOTOR_POSITION,
-} Gimbal_FeedbackSource_t;
+    GIMBAL_POSITION_FEEDBACK_MOTOR,
+} Gimbal_PositionFeedbackSource_t;
+
+/**
+ * @brief 云台速度反馈来源。
+ */
+typedef enum
+{
+    /**< 使用 IMU Roll 角速度反馈。 */
+    GIMBAL_SPEED_FEEDBACK_IMU_ROLL = 0,
+    /**< 使用 IMU Pitch 角速度反馈。 */
+    GIMBAL_SPEED_FEEDBACK_IMU_PITCH,
+    /**< 使用 IMU Yaw 角速度反馈。 */
+    GIMBAL_SPEED_FEEDBACK_IMU_YAW,
+    /**< 使用电机速度反馈。 */
+    GIMBAL_SPEED_FEEDBACK_MOTOR,
+} Gimbal_SpeedFeedbackSource_t;
 
 /**
  * @brief PID 配置。
@@ -101,7 +118,9 @@ typedef struct
     /**< gen-motor 中的电机索引。 */
     size_t motor_index;
     /**< 位置反馈来源。 */
-    Gimbal_FeedbackSource_t feedback_source;
+    Gimbal_PositionFeedbackSource_t position_feedback_source;
+    /**< 速度反馈来源。 */
+    Gimbal_SpeedFeedbackSource_t speed_feedback_source;
     /**< 位置环 PID 配置。 */
     Gimbal_PidConfig_t position_pid;
     /**< 速度环 PID 配置。 */
@@ -142,10 +161,18 @@ typedef struct
     int32_t pitch_mrad;
     /**< 当前 Yaw 姿态角，单位 mrad。 */
     int32_t yaw_mrad;
+    /**< 当前 Roll 角速度，单位 mrad/s。 */
+    int32_t roll_speed_mrad_s;
+    /**< 当前 Pitch 角速度，单位 mrad/s。 */
+    int32_t pitch_speed_mrad_s;
+    /**< 当前 Yaw 角速度，单位 mrad/s。 */
+    int32_t yaw_speed_mrad_s;
     /**< 姿态反馈更新时间，单位毫秒。 */
     uint32_t update_ms;
     /**< 姿态反馈是否有效。 */
     bool valid;
+    /**< 角速度反馈是否有效。 */
+    bool speed_valid;
 } Gimbal_Attitude_t;
 
 /**
@@ -197,7 +224,8 @@ static const Gimbal_AxisConfig_t gimbal_axis_configs[GIMBAL_AXIS_COUNT] = {
     {
         .name = "roll",
         .motor_index = 2U,
-        .feedback_source = GIMBAL_FEEDBACK_ATTITUDE_ROLL,
+        .position_feedback_source = GIMBAL_POSITION_FEEDBACK_ATTITUDE_ROLL,
+        .speed_feedback_source = GIMBAL_SPEED_FEEDBACK_MOTOR,
         .position_pid = {
             .kp = 4000,
             .ki = 0,
@@ -216,7 +244,8 @@ static const Gimbal_AxisConfig_t gimbal_axis_configs[GIMBAL_AXIS_COUNT] = {
     {
         .name = "pitch",
         .motor_index = 0U,
-        .feedback_source = GIMBAL_FEEDBACK_ATTITUDE_PITCH,
+        .position_feedback_source = GIMBAL_POSITION_FEEDBACK_ATTITUDE_PITCH,
+        .speed_feedback_source = GIMBAL_SPEED_FEEDBACK_MOTOR,
         .position_pid = {
             .kp = 4000,
             .ki = 0,
@@ -235,7 +264,8 @@ static const Gimbal_AxisConfig_t gimbal_axis_configs[GIMBAL_AXIS_COUNT] = {
     {
         .name = "yaw",
         .motor_index = 1U,
-        .feedback_source = GIMBAL_FEEDBACK_MOTOR_POSITION,
+        .position_feedback_source = GIMBAL_POSITION_FEEDBACK_MOTOR,
+        .speed_feedback_source = GIMBAL_SPEED_FEEDBACK_MOTOR,
         .position_pid = {
             .kp = 4000,
             .ki = 0,
@@ -507,13 +537,13 @@ static bool gimbal_get_attitude_feedback_locked(const Gimbal_Controller_t *contr
         return false;
     }
 
-    if (axis->config->feedback_source == GIMBAL_FEEDBACK_ATTITUDE_ROLL)
+    if (axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_ROLL)
     {
         *feedback_mrad = controller->attitude.roll_mrad;
         return true;
     }
 
-    if (axis->config->feedback_source == GIMBAL_FEEDBACK_ATTITUDE_PITCH)
+    if (axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_PITCH)
     {
         *feedback_mrad = controller->attitude.pitch_mrad;
         return true;
@@ -709,7 +739,7 @@ static bool gimbal_axis_get_motor_position_feedback(const Gimbal_Axis_t *axis,
         return false;
     }
 
-    if (axis->config->feedback_source != GIMBAL_FEEDBACK_MOTOR_POSITION)
+    if (axis->config->position_feedback_source != GIMBAL_POSITION_FEEDBACK_MOTOR)
     {
         return false;
     }
@@ -744,8 +774,8 @@ static bool gimbal_axis_get_position_feedback(Gimbal_Controller_t *controller,
         return false;
     }
 
-    if ((axis->config->feedback_source == GIMBAL_FEEDBACK_ATTITUDE_ROLL) ||
-        (axis->config->feedback_source == GIMBAL_FEEDBACK_ATTITUDE_PITCH))
+    if ((axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_ROLL) ||
+        (axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_PITCH))
     {
         return gimbal_get_attitude_feedback_locked(controller,
                                                    axis,
@@ -754,6 +784,121 @@ static bool gimbal_axis_get_position_feedback(Gimbal_Controller_t *controller,
     }
 
     return gimbal_axis_get_motor_position_feedback(axis, motor_state, feedback_mrad);
+}
+
+/**
+ * @brief 从电机状态获取速度反馈。
+ * @param axis 轴对象。
+ * @param motor_state 电机状态快照。
+ * @param feedback_speed_mrad_s 输出速度反馈，单位 mrad/s。
+ * @return bool true 表示反馈有效，false 表示反馈无效。
+ */
+static bool gimbal_axis_get_motor_speed_feedback(const Gimbal_Axis_t *axis,
+                                                 const struct gen_motor_state *motor_state,
+                                                 int32_t *feedback_speed_mrad_s)
+{
+    if ((axis == NULL) || (axis->config == NULL) ||
+        (motor_state == NULL) || (feedback_speed_mrad_s == NULL))
+    {
+        return false;
+    }
+
+    if (axis->config->speed_feedback_source != GIMBAL_SPEED_FEEDBACK_MOTOR)
+    {
+        return false;
+    }
+
+    if (!motor_state->speed_valid)
+    {
+        return false;
+    }
+
+    *feedback_speed_mrad_s = motor_state->speed_mrad_s;
+
+    return true;
+}
+
+/**
+ * @brief 获取单轴 IMU 速度反馈。
+ * @param controller 云台控制器对象。
+ * @param axis 轴对象。
+ * @param now_ms 当前时间，单位毫秒。
+ * @param feedback_speed_mrad_s 输出速度反馈，单位 mrad/s。
+ * @return bool true 表示反馈有效，false 表示反馈无效。
+ */
+static bool gimbal_get_imu_speed_feedback_locked(const Gimbal_Controller_t *controller,
+                                                 const Gimbal_Axis_t *axis,
+                                                 uint32_t now_ms,
+                                                 int32_t *feedback_speed_mrad_s)
+{
+    if ((controller == NULL) || (axis == NULL) || (axis->config == NULL) ||
+        (feedback_speed_mrad_s == NULL))
+    {
+        return false;
+    }
+
+    if (!gimbal_attitude_is_fresh_locked(controller, now_ms))
+    {
+        return false;
+    }
+
+    if (!controller->attitude.speed_valid)
+    {
+        return false;
+    }
+
+    if (axis->config->speed_feedback_source == GIMBAL_SPEED_FEEDBACK_IMU_ROLL)
+    {
+        *feedback_speed_mrad_s = controller->attitude.roll_speed_mrad_s;
+        return true;
+    }
+
+    if (axis->config->speed_feedback_source == GIMBAL_SPEED_FEEDBACK_IMU_PITCH)
+    {
+        *feedback_speed_mrad_s = controller->attitude.pitch_speed_mrad_s;
+        return true;
+    }
+
+    if (axis->config->speed_feedback_source == GIMBAL_SPEED_FEEDBACK_IMU_YAW)
+    {
+        *feedback_speed_mrad_s = controller->attitude.yaw_speed_mrad_s;
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * @brief 获取单轴速度反馈。
+ * @param controller 云台控制器对象。
+ * @param axis 轴对象。
+ * @param motor_state 电机状态快照。
+ * @param now_ms 当前时间，单位毫秒。
+ * @param feedback_speed_mrad_s 输出速度反馈，单位 mrad/s。
+ * @return bool true 表示反馈有效，false 表示反馈无效。
+ */
+static bool gimbal_axis_get_speed_feedback(Gimbal_Controller_t *controller,
+                                           Gimbal_Axis_t *axis,
+                                           const struct gen_motor_state *motor_state,
+                                           uint32_t now_ms,
+                                           int32_t *feedback_speed_mrad_s)
+{
+    if ((controller == NULL) || (axis == NULL) || (axis->config == NULL))
+    {
+        return false;
+    }
+
+    if (axis->config->speed_feedback_source == GIMBAL_SPEED_FEEDBACK_MOTOR)
+    {
+        return gimbal_axis_get_motor_speed_feedback(axis,
+                                                    motor_state,
+                                                    feedback_speed_mrad_s);
+    }
+
+    return gimbal_get_imu_speed_feedback_locked(controller,
+                                                axis,
+                                                now_ms,
+                                                feedback_speed_mrad_s);
 }
 
 /**
@@ -770,10 +915,12 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
     struct gen_motor_state motor_state;
     int32_t target_mrad;
     int32_t feedback_position_mrad;
+    int32_t feedback_speed_mrad_s;
     int32_t target_speed_mrad_s;
     int32_t current_target;
     bool target_valid;
-    bool feedback_valid;
+    bool position_feedback_valid;
+    bool speed_feedback_valid;
     int ret;
 
     if ((controller == NULL) || (axis == NULL) || (axis->motor == NULL))
@@ -794,13 +941,18 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
     k_mutex_lock(&controller->lock, K_FOREVER);
     target_mrad = axis->target_mrad;
     target_valid = axis->target_valid;
-    feedback_valid = gimbal_axis_get_position_feedback(controller,
-                                                       axis,
-                                                       &motor_state,
-                                                       now_ms,
-                                                       &feedback_position_mrad);
+    position_feedback_valid = gimbal_axis_get_position_feedback(controller,
+                                                                axis,
+                                                                &motor_state,
+                                                                now_ms,
+                                                                &feedback_position_mrad);
+    speed_feedback_valid = gimbal_axis_get_speed_feedback(controller,
+                                                          axis,
+                                                          &motor_state,
+                                                          now_ms,
+                                                          &feedback_speed_mrad_s);
 
-    if ((!target_valid) || (!feedback_valid) || (!motor_state.speed_valid))
+    if ((!target_valid) || (!position_feedback_valid) || (!speed_feedback_valid))
     {
         gimbal_axis_output_zero_current(axis);
         k_mutex_unlock(&controller->lock);
@@ -821,7 +973,7 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
                                                         feedback_position_mrad);
     current_target = gimbal_axis_calc_current_target(axis,
                                                      target_speed_mrad_s,
-                                                     motor_state.speed_mrad_s);
+                                                     feedback_speed_mrad_s);
 
     ret = gen_motor_set_current_target(axis->motor, current_target);
 
@@ -1161,6 +1313,46 @@ int gimbal_set_attitude_feedback(int32_t roll_mrad,
     controller->attitude.yaw_mrad = yaw_mrad;
     controller->attitude.update_ms = k_uptime_get_32();
     controller->attitude.valid = true;
+    controller->attitude.speed_valid = false;
+    k_mutex_unlock(&controller->lock);
+
+    return 0;
+}
+
+/**
+ * @brief 设置 IMU 姿态角和角速度反馈。
+ * @param roll_mrad 当前 Roll 姿态角，单位 mrad。
+ * @param pitch_mrad 当前 Pitch 姿态角，单位 mrad。
+ * @param yaw_mrad 当前 Yaw 姿态角，单位 mrad。
+ * @param roll_speed_mrad_s 当前 Roll 角速度，单位 mrad/s。
+ * @param pitch_speed_mrad_s 当前 Pitch 角速度，单位 mrad/s。
+ * @param yaw_speed_mrad_s 当前 Yaw 角速度，单位 mrad/s。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int gimbal_set_imu_feedback(int32_t roll_mrad,
+                            int32_t pitch_mrad,
+                            int32_t yaw_mrad,
+                            int32_t roll_speed_mrad_s,
+                            int32_t pitch_speed_mrad_s,
+                            int32_t yaw_speed_mrad_s)
+{
+    Gimbal_Controller_t *controller = &gimbal_controller;
+
+    if (!gimbal_controller_is_ready(controller))
+    {
+        return -ENODEV;
+    }
+
+    k_mutex_lock(&controller->lock, K_FOREVER);
+    controller->attitude.roll_mrad = roll_mrad;
+    controller->attitude.pitch_mrad = pitch_mrad;
+    controller->attitude.yaw_mrad = yaw_mrad;
+    controller->attitude.roll_speed_mrad_s = roll_speed_mrad_s;
+    controller->attitude.pitch_speed_mrad_s = pitch_speed_mrad_s;
+    controller->attitude.yaw_speed_mrad_s = yaw_speed_mrad_s;
+    controller->attitude.update_ms = k_uptime_get_32();
+    controller->attitude.valid = true;
+    controller->attitude.speed_valid = true;
     k_mutex_unlock(&controller->lock);
 
     return 0;
