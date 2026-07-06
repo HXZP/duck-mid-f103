@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>云台 P-Y-R 3D 仿真</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111418;
+      --panel: #1c2128;
+      --panel-2: #242b34;
+      --text: #e5e7eb;
+      --muted: #9aa4b2;
+      --line: #39424f;
+      --pitch: #52c7ea;
+      --yaw: #f2c94c;
+      --roll: #ff7a59;
+      --target: #89e06f;
+      --danger: #ff5c7a;
+      --button: #2f6fed;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      height: 100vh;
+      min-height: 0;
+    }
+
+    #viewport {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      background: #0f1216;
+    }
+
+    #viewport canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .overlay {
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      display: grid;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: rgba(28, 33, 40, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    aside {
+      height: 100vh;
+      overflow: auto;
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+      padding: 16px;
+    }
+
+    section {
+      margin-bottom: 18px;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 14px;
+      font-weight: 650;
+      color: #f4f6f8;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr) 58px;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--button);
+    }
+
+    input[type="number"] {
+      width: 58px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 5px 6px;
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .buttons {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: var(--button);
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .metrics {
+      display: grid;
+      gap: 6px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 12px;
+    }
+
+    .metric {
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      gap: 10px;
+      padding: 7px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(36, 43, 52, 0.6);
+    }
+
+    .metric label {
+      color: var(--muted);
+    }
+
+    .metric value {
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+
+    .warn {
+      color: var(--danger);
+    }
+
+    .ok {
+      color: var(--target);
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+      margin: 0;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        overflow: auto;
+      }
+
+      .app {
+        grid-template-columns: 1fr;
+        height: auto;
+      }
+
+      #viewport {
+        height: 58vh;
+      }
+
+      aside {
+        height: auto;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <main id="viewport">
+      <div class="overlay">
+        <h1 class="title">P-Y-R 机械臂式云台仿真</h1>
+        <div class="legend">
+          <span><i class="dot" style="background: var(--pitch)"></i>Pitch</span>
+          <span><i class="dot" style="background: var(--yaw)"></i>Yaw</span>
+          <span><i class="dot" style="background: var(--roll)"></i>Roll</span>
+          <span><i class="dot" style="background: var(--target)"></i>目标姿态</span>
+        </div>
+      </div>
+    </main>
+
+    <aside>
+      <section>
+        <h2>当前电机角度</h2>
+        <div class="row"><label>Pitch Y</label><input id="pitch" type="range" min="-70" max="70" step="1" value="0"><input id="pitchNum" type="number" min="-70" max="70" step="1" value="0"></div>
+        <div class="row"><label>Yaw Z</label><input id="yaw" type="range" min="-90" max="90" step="1" value="0"><input id="yawNum" type="number" min="-90" max="90" step="1" value="0"></div>
+        <div class="row"><label>Roll X</label><input id="roll" type="range" min="-90" max="90" step="1" value="0"><input id="rollNum" type="number" min="-90" max="90" step="1" value="0"></div>
+      </section>
+
+      <section>
+        <h2>目标姿态</h2>
+        <div class="row"><label>World Roll</label><input id="targetX" type="range" min="-120" max="120" step="1" value="25"><input id="targetXNum" type="number" min="-120" max="120" step="1" value="25"></div>
+        <div class="row"><label>World Pitch</label><input id="targetY" type="range" min="-120" max="120" step="1" value="15"><input id="targetYNum" type="number" min="-120" max="120" step="1" value="15"></div>
+        <div class="row"><label>World Yaw</label><input id="targetZ" type="range" min="-120" max="120" step="1" value="-20"><input id="targetZNum" type="number" min="-120" max="120" step="1" value="-20"></div>
+      </section>
+
+      <section>
+        <h2>仿真参数</h2>
+        <div class="row"><label>Kp 位置环</label><input id="kp" type="range" min="0" max="8" step="0.1" value="2.4"><input id="kpNum" type="number" min="0" max="8" step="0.1" value="2.4"></div>
+        <div class="row"><label>dt 秒</label><input id="dt" type="range" min="0.005" max="0.05" step="0.005" value="0.02"><input id="dtNum" type="number" min="0.005" max="0.05" step="0.005" value="0.02"></div>
+      </section>
+
+      <section>
+        <h2>控制</h2>
+        <div class="buttons">
+          <button id="runBtn">运行</button>
+          <button id="stepBtn" class="secondary">单步</button>
+          <button id="resetBtn" class="secondary">重置</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>计算结果</h2>
+        <div class="metrics">
+          <div class="metric"><label>omega_cmd X/Y/Z deg/s</label><value id="omegaMetric">-</value></div>
+          <div class="metric"><label>motor_cmd deg/s</label><value id="motorMetric">-</value></div>
+          <div class="metric"><label>正反解误差</label><value id="errorMetric">-</value></div>
+          <div class="metric"><label>状态</label><value id="statusMetric">-</value></div>
+        </div>
+      </section>
+
+      <section>
+        <p class="hint">固定底座承载 Pitch 关节，Pitch 零位先向上，再通过 90° 结构转折连接 Yaw 关节，Yaw 后沿 X 方向连接 Roll 负载。位置环输出姿态角速度，再通过 Jacobian 反解为 pitch/yaw/roll 三个电机轴速度。此页面用于验证方向和耦合关系，不代表真实电机动力学。</p>
+      </section>
+    </aside>
+  </div>
+
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
+    const el = id => document.getElementById(id);
+    const degToRad = deg => deg * Math.PI / 180;
+    const radToDeg = rad => rad * 180 / Math.PI;
+    const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+    const state = {
+      running: false,
+      pitch: 0,
+      yaw: 0,
+      roll: 0,
+      targetX: 25,
+      targetY: 15,
+      targetZ: -20,
+      kp: 2.4,
+      dt: 0.02,
+    };
+
+    const viewport = el("viewport");
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0f1216);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    camera.up.set(0, 0, 1);
+    camera.position.set(5.8, -5.6, 3.4);
+    camera.lookAt(1.0, 0, 0.2);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    viewport.appendChild(renderer.domElement);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x202733, 1.8));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.4);
+    keyLight.position.set(4, -4, 5);
+    scene.add(keyLight);
+
+    const grid = new THREE.GridHelper(8, 16, 0x3b4655, 0x252d38);
+    grid.rotation.x = Math.PI / 2;
+    grid.position.z = -1.15;
+    scene.add(grid);
+
+    const baseAxes = new THREE.AxesHelper(1.4);
+    scene.add(baseAxes);
+
+    const baseAssembly = new THREE.Group();
+    const pitchPivot = new THREE.Group();
+    const yawPivot = new THREE.Group();
+    const rollPivot = new THREE.Group();
+    const pitchOutput = new THREE.Group();
+    const yawOutput = new THREE.Group();
+    pitchPivot.position.set(0, 0, -0.18);
+    yawPivot.position.set(0, 0, 1.72);
+    rollPivot.position.set(1.55, 0, 0);
+    baseAssembly.add(pitchPivot);
+    pitchPivot.add(pitchOutput);
+    pitchOutput.add(yawPivot);
+    yawPivot.add(yawOutput);
+    yawOutput.add(rollPivot);
+    scene.add(baseAssembly);
+
+    const targetGroup = new THREE.Group();
+    targetGroup.rotation.order = "ZYX";
+    targetGroup.position.set(2.33, 0, 1.54);
+    scene.add(targetGroup);
+
+    function makeCylinderBetween(start, end, radius, color) {
+      const direction = new THREE.Vector3().subVectors(end, start);
+      const length = direction.length();
+      const geometry = new THREE.CylinderGeometry(radius, radius, length, 24);
+      const material = new THREE.MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.08 });
+      const mesh = new THREE.Mesh(geometry, material);
+      const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+      mesh.position.copy(midpoint);
+      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+      return mesh;
+    }
+
+    function makeBox(size, color) {
+      const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+      const material = new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.05 });
+      return new THREE.Mesh(geometry, material);
+    }
+
+    function makeSphere(radius, color) {
+      const geometry = new THREE.SphereGeometry(radius, 32, 16);
+      const material = new THREE.MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.08 });
+      return new THREE.Mesh(geometry, material);
+    }
+
+    function makeRing(radius, tube, color) {
+      const geometry = new THREE.TorusGeometry(radius, tube, 16, 96);
+      const material = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.08 });
+      return new THREE.Mesh(geometry, material);
+    }
+
+    const basePlate = makeBox(new THREE.Vector3(1.55, 1.25, 0.22), 0x303844);
+    basePlate.position.z = -1.04;
+    baseAssembly.add(basePlate);
+
+    const baseColumn = makeCylinderBetween(new THREE.Vector3(0, 0, -0.94), new THREE.Vector3(0, 0, -0.08), 0.16, 0x46515f);
+    baseAssembly.add(baseColumn);
+
+    const pitchForkLeft = makeBox(new THREE.Vector3(0.2, 0.14, 0.58), 0x46515f);
+    pitchForkLeft.position.set(0, -0.42, -0.18);
+    baseAssembly.add(pitchForkLeft);
+
+    const pitchForkRight = makeBox(new THREE.Vector3(0.2, 0.14, 0.58), 0x46515f);
+    pitchForkRight.position.set(0, 0.42, -0.18);
+    baseAssembly.add(pitchForkRight);
+
+    const pitchForkBridge = makeBox(new THREE.Vector3(0.28, 0.12, 0.86), 0x303844);
+    pitchForkBridge.position.set(-0.12, -0.58, -0.18);
+    baseAssembly.add(pitchForkBridge);
+
+    const pitchAxis = makeCylinderBetween(new THREE.Vector3(0, -0.58, 0), new THREE.Vector3(0, 0.58, 0), 0.045, 0x52c7ea);
+    pitchPivot.add(pitchAxis);
+
+    const pitchJoint = makeSphere(0.24, 0x52c7ea);
+    pitchPivot.add(pitchJoint);
+
+    const pitchArm = makeCylinderBetween(new THREE.Vector3(0, 0, 0.16), new THREE.Vector3(0, 0, 1.72), 0.075, 0x52c7ea);
+    pitchOutput.add(pitchArm);
+
+    const pitchBraceA = makeCylinderBetween(new THREE.Vector3(0.2, 0.22, 0.26), new THREE.Vector3(0.2, 0.22, 1.52), 0.025, 0x7bd8f0);
+    const pitchBraceB = makeCylinderBetween(new THREE.Vector3(-0.2, -0.22, 0.26), new THREE.Vector3(-0.2, -0.22, 1.52), 0.025, 0x7bd8f0);
+    pitchOutput.add(pitchBraceA);
+    pitchOutput.add(pitchBraceB);
+
+    const pitchElbow = makeBox(new THREE.Vector3(0.58, 0.48, 0.16), 0x52c7ea);
+    pitchElbow.position.set(0.22, 0, 1.72);
+    pitchOutput.add(pitchElbow);
+
+    const yawMount = makeBox(new THREE.Vector3(0.36, 0.42, 0.56), 0x59636f);
+    yawPivot.add(yawMount);
+
+    const yawAxis = makeCylinderBetween(new THREE.Vector3(0, 0, -0.46), new THREE.Vector3(0, 0, 0.46), 0.045, 0xf2c94c);
+    yawPivot.add(yawAxis);
+
+    const yawJoint = makeSphere(0.22, 0xf2c94c);
+    yawPivot.add(yawJoint);
+
+    const yawArm = makeCylinderBetween(new THREE.Vector3(0.14, 0, 0), new THREE.Vector3(1.55, 0, 0), 0.065, 0xf2c94c);
+    yawOutput.add(yawArm);
+
+    const yawBrace = makeCylinderBetween(new THREE.Vector3(0.24, 0.16, 0.12), new THREE.Vector3(1.35, -0.16, 0.12), 0.025, 0xf7d66c);
+    yawOutput.add(yawBrace);
+
+    const rollMount = makeBox(new THREE.Vector3(0.38, 0.36, 0.44), 0x5a4a43);
+    rollPivot.add(rollMount);
+
+    const rollAxis = makeCylinderBetween(new THREE.Vector3(-0.42, 0, 0), new THREE.Vector3(0.72, 0, 0), 0.045, 0xff7a59);
+    rollPivot.add(rollAxis);
+
+    const rollJoint = makeSphere(0.2, 0xff7a59);
+    rollPivot.add(rollJoint);
+
+    const payload = makeBox(new THREE.Vector3(0.96, 0.46, 0.58), 0xff7a59);
+    payload.position.x = 0.78;
+    rollPivot.add(payload);
+
+    const lens = makeCylinderBetween(new THREE.Vector3(1.2, 0, 0), new THREE.Vector3(1.62, 0, 0), 0.16, 0xdfe7ef);
+    rollPivot.add(lens);
+
+    const payloadTop = makeCylinderBetween(new THREE.Vector3(0.45, 0.29, 0), new THREE.Vector3(1.05, 0.29, 0), 0.035, 0xffa18c);
+    rollPivot.add(payloadTop);
+
+    const targetBox = makeBox(new THREE.Vector3(1.35, 0.08, 0.08), 0x89e06f);
+    targetBox.material.transparent = true;
+    targetBox.material.opacity = 0.92;
+    targetBox.position.set(0.68, 0, 0);
+    targetGroup.add(targetBox);
+
+    const targetTip = makeCylinderBetween(new THREE.Vector3(1.35, 0, 0), new THREE.Vector3(1.95, 0, 0), 0.025, 0x89e06f);
+    targetGroup.add(targetTip);
+
+    function syncInputs() {
+      for (const key of ["pitch", "yaw", "roll", "targetX", "targetY", "targetZ", "kp", "dt"]) {
+        const range = el(key);
+        const num = el(`${key}Num`);
+        range.value = state[key];
+        num.value = state[key];
+      }
+    }
+
+    function readInputs() {
+      for (const key of ["pitch", "yaw", "roll", "targetX", "targetY", "targetZ", "kp", "dt"]) {
+        state[key] = Number(el(key).value);
+      }
+    }
+
+    function bindPair(key) {
+      const range = el(key);
+      const num = el(`${key}Num`);
+      range.addEventListener("input", () => {
+        num.value = range.value;
+        state[key] = Number(range.value);
+        updateScene();
+      });
+      num.addEventListener("input", () => {
+        const value = clamp(Number(num.value), Number(num.min), Number(num.max));
+        num.value = value;
+        range.value = value;
+        state[key] = value;
+        updateScene();
+      });
+    }
+
+    for (const key of ["pitch", "yaw", "roll", "targetX", "targetY", "targetZ", "kp", "dt"]) {
+      bindPair(key);
+    }
+
+    function forwardOmega(pitch, yaw, pitchDot, yawDot, rollDot) {
+      const sp = Math.sin(pitch);
+      const cp = Math.cos(pitch);
+      const sy = Math.sin(yaw);
+      const cy = Math.cos(yaw);
+      return {
+        x: sp * yawDot + cp * cy * rollDot,
+        y: pitchDot + sy * rollDot,
+        z: cp * yawDot - sp * cy * rollDot,
+      };
+    }
+
+    function inverseMotorSpeed(pitch, yaw, omega) {
+      const sp = Math.sin(pitch);
+      const cp = Math.cos(pitch);
+      const sy = Math.sin(yaw);
+      const cy = Math.cos(yaw);
+      const singular = Math.abs(cy) < 1e-3;
+      const rollDot = singular ? 0 : (cp * omega.x - sp * omega.z) / cy;
+      const yawDot = sp * omega.x + cp * omega.z;
+      const pitchDot = omega.y - sy * rollDot;
+      return { pitchDot, yawDot, rollDot, singular };
+    }
+
+    // 根据机构 P-Y-R 旋转顺序生成当前姿态四元数，角度单位为 deg。
+    function makeGimbalQuaternion(rollDeg, pitchDeg, yawDeg) {
+      const euler = new THREE.Euler(degToRad(rollDeg), degToRad(pitchDeg), degToRad(yawDeg), "YZX");
+      return new THREE.Quaternion().setFromEuler(euler);
+    }
+
+    // 根据世界坐标系 Roll-Pitch-Yaw 目标生成姿态四元数，角度单位为 deg。
+    function makeWorldTargetQuaternion(rollDeg, pitchDeg, yawDeg) {
+      const euler = new THREE.Euler(degToRad(rollDeg), degToRad(pitchDeg), degToRad(yawDeg), "ZYX");
+      return new THREE.Quaternion().setFromEuler(euler);
+    }
+
+    // 计算基座坐标系下的姿态误差旋转向量，返回单位为 deg。
+    function attitudeErrorDeg(current, target) {
+      const currentQuat = makeGimbalQuaternion(current.roll, current.pitch, current.yaw);
+      const targetQuat = makeWorldTargetQuaternion(target.roll, target.pitch, target.yaw);
+      const errorQuat = targetQuat.clone().multiply(currentQuat.clone().invert()).normalize();
+      if (errorQuat.w < 0) {
+        errorQuat.x = -errorQuat.x;
+        errorQuat.y = -errorQuat.y;
+        errorQuat.z = -errorQuat.z;
+        errorQuat.w = -errorQuat.w;
+      }
+      const sinHalf = Math.hypot(errorQuat.x, errorQuat.y, errorQuat.z);
+      if (sinHalf < 1e-9) {
+        return { x: 0, y: 0, z: 0 };
+      }
+      const angle = 2 * Math.atan2(sinHalf, errorQuat.w);
+      const scale = radToDeg(angle) / sinHalf;
+      return {
+        x: errorQuat.x * scale,
+        y: errorQuat.y * scale,
+        z: errorQuat.z * scale,
+      };
+    }
+
+    function calcControl() {
+      readInputs();
+      const error = attitudeErrorDeg({
+        roll: state.roll,
+        pitch: state.pitch,
+        yaw: state.yaw,
+      }, {
+        roll: state.targetX,
+        pitch: state.targetY,
+        yaw: state.targetZ,
+      });
+      const omegaDeg = {
+        x: clamp(state.kp * error.x, -220, 220),
+        y: clamp(state.kp * error.y, -220, 220),
+        z: clamp(state.kp * error.z, -220, 220),
+      };
+      const omega = {
+        x: degToRad(omegaDeg.x),
+        y: degToRad(omegaDeg.y),
+        z: degToRad(omegaDeg.z),
+      };
+      const motor = inverseMotorSpeed(degToRad(state.pitch), degToRad(state.yaw), omega);
+      const omegaBack = forwardOmega(degToRad(state.pitch), degToRad(state.yaw), motor.pitchDot, motor.yawDot, motor.rollDot);
+      const errorBack = motor.singular ? Number.POSITIVE_INFINITY : Math.hypot(omegaBack.x - omega.x, omegaBack.y - omega.y, omegaBack.z - omega.z);
+      return {
+        omegaDeg,
+        motorDeg: {
+          pitch: radToDeg(motor.pitchDot),
+          yaw: radToDeg(motor.yawDot),
+          roll: radToDeg(motor.rollDot),
+        },
+        errorBack,
+        singular: motor.singular,
+      };
+    }
+
+    function simulationStep() {
+      const control = calcControl();
+      state.pitch += control.motorDeg.pitch * state.dt;
+      state.yaw += control.motorDeg.yaw * state.dt;
+      state.roll += control.motorDeg.roll * state.dt;
+      state.pitch = clamp(state.pitch, -70, 70);
+      state.yaw = clamp(state.yaw, -90, 90);
+      state.roll = clamp(state.roll, -90, 90);
+      syncInputs();
+      updateScene();
+    }
+
+    function updateScene() {
+      const pitchRad = degToRad(state.pitch);
+      const yawRad = degToRad(state.yaw);
+      const rollRad = degToRad(state.roll);
+      pitchPivot.rotation.y = pitchRad;
+      yawPivot.rotation.z = yawRad;
+      rollPivot.rotation.x = rollRad;
+
+      targetGroup.quaternion.copy(makeWorldTargetQuaternion(state.targetX, state.targetY, state.targetZ));
+
+      const control = calcControl();
+      el("omegaMetric").textContent = `x=${control.omegaDeg.x.toFixed(1)}, y=${control.omegaDeg.y.toFixed(1)}, z=${control.omegaDeg.z.toFixed(1)}`;
+      el("motorMetric").textContent = `p=${control.motorDeg.pitch.toFixed(1)}, y=${control.motorDeg.yaw.toFixed(1)}, r=${control.motorDeg.roll.toFixed(1)}`;
+      el("errorMetric").textContent = Number.isFinite(control.errorBack) ? control.errorBack.toExponential(2) : "singular";
+      if (control.singular) {
+        el("statusMetric").innerHTML = "<span class=\"warn\">Yaw 接近 ±90°，Jacobian 奇异</span>";
+      } else {
+        el("statusMetric").innerHTML = control.errorBack < 1e-10 ? "<span class=\"ok\">Jacobian 正反解一致</span>" : "<span class=\"warn\">正反解误差偏大</span>";
+      }
+    }
+
+    function resize() {
+      const rect = viewport.getBoundingClientRect();
+      renderer.setSize(rect.width, rect.height, false);
+      camera.aspect = rect.width / Math.max(rect.height, 1);
+      camera.updateProjectionMatrix();
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (state.running) {
+        simulationStep();
+      }
+      renderer.render(scene, camera);
+    }
+
+    el("runBtn").addEventListener("click", () => {
+      state.running = !state.running;
+      el("runBtn").textContent = state.running ? "暂停" : "运行";
+    });
+
+    el("stepBtn").addEventListener("click", () => {
+      simulationStep();
+    });
+
+    el("resetBtn").addEventListener("click", () => {
+      Object.assign(state, {
+        running: false,
+        pitch: 0,
+        yaw: 0,
+        roll: 0,
+        targetX: 25,
+        targetY: 15,
+        targetZ: -20,
+        kp: 2.4,
+        dt: 0.02,
+      });
+      el("runBtn").textContent = "运行";
+      syncInputs();
+      updateScene();
+    });
+
+    window.addEventListener("resize", resize);
+    syncInputs();
+    resize();
+    updateScene();
+    animate();
+  </script>
+</body>
+</html>
