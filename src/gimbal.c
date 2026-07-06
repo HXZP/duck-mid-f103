@@ -549,6 +549,12 @@ static bool gimbal_get_attitude_feedback_locked(const Gimbal_Controller_t *contr
         return true;
     }
 
+    if (axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_YAW)
+    {
+        *feedback_mrad = controller->attitude.yaw_mrad;
+        return true;
+    }
+
     return false;
 }
 
@@ -775,7 +781,8 @@ static bool gimbal_axis_get_position_feedback(Gimbal_Controller_t *controller,
     }
 
     if ((axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_ROLL) ||
-        (axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_PITCH))
+        (axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_PITCH) ||
+        (axis->config->position_feedback_source == GIMBAL_POSITION_FEEDBACK_ATTITUDE_YAW))
     {
         return gimbal_get_attitude_feedback_locked(controller,
                                                    axis,
