@@ -5,6 +5,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include "can_command.h"
 #include "gimbal.h"
 #include "led.h"
 #include "motor.h"
@@ -56,6 +57,13 @@ int main(void)
     if (ret < 0)
     {
         LOG_WRN("Gimbal init failed: %d", ret);
+    }
+
+    ret = can_command_init();
+
+    if (ret < 0)
+    {
+        LOG_WRN("CAN command init failed: %d", ret);
     }
 
     while (1)

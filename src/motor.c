@@ -265,7 +265,11 @@ int motor_init(void)
                     0,
                     K_NO_WAIT);
 
-    k_thread_name_set(&motor_app_config_thread, "motor_config");
+    if (IS_ENABLED(CONFIG_THREAD_NAME))
+    {
+        k_thread_name_set(&motor_app_config_thread, "motor_config");
+    }
+
     motor_app_config_thread_started = true;
 
     return 0;

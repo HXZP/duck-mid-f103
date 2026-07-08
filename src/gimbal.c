@@ -32,21 +32,6 @@ LOG_MODULE_REGISTER(gimbal, LOG_LEVEL_INF);
 #define GIMBAL_GEN_MOTOR_NODE DT_NODELABEL(motor_pyr)
 
 /**
- * @brief 云台控制轴编号。
- */
-typedef enum
-{
-    /**< Roll 轴。 */
-    GIMBAL_AXIS_ROLL = 0,
-    /**< Pitch 轴。 */
-    GIMBAL_AXIS_PITCH,
-    /**< Yaw 轴。 */
-    GIMBAL_AXIS_YAW,
-    /**< 云台轴数量。 */
-    GIMBAL_AXIS_COUNT,
-} Gimbal_AxisId_t;
-
-/**
  * @brief 云台位置反馈来源。
  */
 typedef enum
@@ -142,12 +127,18 @@ typedef struct
     Gimbal_Pid_t position_pid;
     /**< 速度环 PID。 */
     Gimbal_Pid_t speed_pid;
+    /**< 位置环输出的目标速度，单位 mrad/s。 */
+    int32_t target_speed_mrad_s;
+    /**< 最近一次位置环更新时间，单位毫秒。 */
+    uint32_t last_position_update_ms;
     /**< 最近一次电流目标。 */
     int32_t last_current_target;
     /**< 是否已经设置电流模式。 */
     bool current_mode_requested;
     /**< 目标是否有效。 */
     bool target_valid;
+    /**< 位置环输出目标速度是否有效。 */
+    bool target_speed_valid;
 } Gimbal_Axis_t;
 
 /**
@@ -184,12 +175,22 @@ typedef struct
     const char *name;
     /**< gen-motor 设备。 */
     const struct device *gen_motor_dev;
-    /**< 控制周期，单位毫秒。 */
-    uint32_t control_period_ms;
+    /**< 速度环控制周期，单位毫秒。 */
+    uint32_t speed_control_period_ms;
+    /**< 位置环控制周期，单位毫秒。 */
+    uint32_t position_control_period_ms;
     /**< RK 姿态反馈超时时间，单位毫秒。 */
     uint32_t attitude_timeout_ms;
     /**< 角度整圈范围，单位 mrad。 */
     int32_t full_circle_mrad;
+    /**< 位置环积分限幅百分比基准，单位 mrad。 */
+    int32_t position_integral_limit_base;
+    /**< 位置环输出限幅百分比基准，单位 mrad/s。 */
+    int32_t position_output_limit_base;
+    /**< 速度环积分限幅百分比基准，单位 mrad/s。 */
+    int32_t speed_integral_limit_base;
+    /**< 速度环输出限幅百分比基准，单位电流控制量。 */
+    int32_t speed_output_limit_base;
     /**< 轴配置表。 */
     const Gimbal_AxisConfig_t *axis_configs;
     /**< 轴数量。 */
@@ -224,41 +225,41 @@ static const Gimbal_AxisConfig_t gimbal_axis_configs[GIMBAL_AXIS_COUNT] = {
     {
         .name = "roll",
         .motor_index = 2U,
-        .position_feedback_source = GIMBAL_POSITION_FEEDBACK_ATTITUDE_ROLL,
+        .position_feedback_source = GIMBAL_POSITION_FEEDBACK_MOTOR,
         .speed_feedback_source = GIMBAL_SPEED_FEEDBACK_MOTOR,
         .position_pid = {
-            .kp = 4000,
+            .kp = 0 ,
             .ki = 0,
             .kd = 0,
             .integral_limit = 0,
-            .output_limit = 6000,
+            .output_limit = 0,
         },
         .speed_pid = {
-            .kp = 2,
+            .kp = 0,
             .ki = 0,
             .kd = 0,
-            .integral_limit = 200000,
-            .output_limit = 5000,
+            .integral_limit = 0,
+            .output_limit = 0,
         },
     },
     {
         .name = "pitch",
         .motor_index = 0U,
-        .position_feedback_source = GIMBAL_POSITION_FEEDBACK_ATTITUDE_PITCH,
+        .position_feedback_source = GIMBAL_POSITION_FEEDBACK_MOTOR,
         .speed_feedback_source = GIMBAL_SPEED_FEEDBACK_MOTOR,
         .position_pid = {
-            .kp = 4000,
+            .kp = 0,
             .ki = 0,
             .kd = 0,
             .integral_limit = 0,
-            .output_limit = 6000,
+            .output_limit = 0,
         },
         .speed_pid = {
-            .kp = 2,
+            .kp = 0,
             .ki = 0,
             .kd = 0,
-            .integral_limit = 200000,
-            .output_limit = 5000,
+            .integral_limit = 0,
+            .output_limit = 0,
         },
     },
     {
@@ -267,18 +268,18 @@ static const Gimbal_AxisConfig_t gimbal_axis_configs[GIMBAL_AXIS_COUNT] = {
         .position_feedback_source = GIMBAL_POSITION_FEEDBACK_MOTOR,
         .speed_feedback_source = GIMBAL_SPEED_FEEDBACK_MOTOR,
         .position_pid = {
-            .kp = 4000,
+            .kp = 0,
             .ki = 0,
             .kd = 0,
             .integral_limit = 0,
-            .output_limit = 6000,
+            .output_limit = 0,
         },
         .speed_pid = {
-            .kp = 2,
+            .kp = 0,
             .ki = 0,
             .kd = 0,
-            .integral_limit = 200000,
-            .output_limit = 5000,
+            .integral_limit = 0,
+            .output_limit = 0,
         },
     },
 };
@@ -287,9 +288,14 @@ static const Gimbal_AxisConfig_t gimbal_axis_configs[GIMBAL_AXIS_COUNT] = {
 static const Gimbal_ControllerConfig_t gimbal_default_config = {
     .name = "gimbal",
     .gen_motor_dev = DEVICE_DT_GET(GIMBAL_GEN_MOTOR_NODE),
-    .control_period_ms = 5U,
+    .speed_control_period_ms = 2U,
+    .position_control_period_ms = 10U,
     .attitude_timeout_ms = 100U,
     .full_circle_mrad = 6283,
+    .position_integral_limit_base = 6283,
+    .position_output_limit_base = 6283,
+    .speed_integral_limit_base = 6283,
+    .speed_output_limit_base = 32767,
     .axis_configs = gimbal_axis_configs,
     .axis_count = GIMBAL_AXIS_COUNT,
 };
@@ -364,6 +370,66 @@ static int32_t gimbal_clamp_symmetric_i64(int64_t value, int32_t limit)
 }
 
 /**
+ * @brief 将百分比换算为实际限幅。
+ * @param percent 百分比数值。
+ * @param base 百分比基准值。
+ * @return int32_t 实际限幅值，0 表示关闭或不限幅。
+ */
+static int32_t gimbal_percent_to_limit(uint32_t percent, int32_t base)
+{
+    int64_t value;
+
+    if (percent == 0U)
+    {
+        return 0;
+    }
+
+    if (base <= 0)
+    {
+        return 0;
+    }
+
+    value = ((int64_t)base * percent) / 100;
+
+    return gimbal_clamp_i64(value, 0, INT32_MAX);
+}
+
+/**
+ * @brief 将实际限幅反算为百分比。
+ * @param limit 实际限幅值。
+ * @param base 百分比基准值。
+ * @return uint32_t 百分比数值。
+ */
+static uint32_t gimbal_limit_to_percent(int32_t limit, int32_t base)
+{
+    int64_t percent;
+
+    if (limit <= 0)
+    {
+        return 0U;
+    }
+
+    if (base <= 0)
+    {
+        return 0U;
+    }
+
+    percent = ((int64_t)limit * 100) / base;
+
+    if (percent < 0)
+    {
+        return 0U;
+    }
+
+    if (percent > UINT32_MAX)
+    {
+        return UINT32_MAX;
+    }
+
+    return (uint32_t)percent;
+}
+
+/**
  * @brief 复位 PID 运行状态。
  * @param pid PID 对象。
  * @return void
@@ -395,6 +461,178 @@ static int gimbal_pid_init(Gimbal_Pid_t *pid, const Gimbal_PidConfig_t *config)
 
     memset(pid, 0, sizeof(*pid));
     pid->config = *config;
+
+    return 0;
+}
+
+/**
+ * @brief 判断轴编号是否有效。
+ * @param axis_id 轴编号。
+ * @return bool true 表示有效，false 表示无效。
+ */
+static bool gimbal_axis_id_is_valid(enum gimbal_axis_id axis_id)
+{
+    if ((int)axis_id < 0)
+    {
+        return false;
+    }
+
+    if (axis_id >= GIMBAL_AXIS_COUNT)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * @brief 获取指定轴的指定 PID 环。
+ * @param axis 轴对象。
+ * @param loop PID 环类型。
+ * @return Gimbal_Pid_t * 成功返回 PID 对象，失败返回 NULL。
+ */
+static Gimbal_Pid_t *gimbal_axis_get_pid(Gimbal_Axis_t *axis, enum gimbal_pid_loop loop)
+{
+    if (axis == NULL)
+    {
+        return NULL;
+    }
+
+    if (loop == GIMBAL_PID_LOOP_POSITION)
+    {
+        return &axis->position_pid;
+    }
+
+    if (loop == GIMBAL_PID_LOOP_SPEED)
+    {
+        return &axis->speed_pid;
+    }
+
+    return NULL;
+}
+
+/**
+ * @brief 获取指定 PID 环的积分限幅百分比基准。
+ * @param config 云台控制器配置。
+ * @param loop PID 环类型。
+ * @return int32_t 百分比基准值。
+ */
+static int32_t gimbal_get_integral_limit_base(const Gimbal_ControllerConfig_t *config,
+                                              enum gimbal_pid_loop loop)
+{
+    if (config == NULL)
+    {
+        return 0;
+    }
+
+    if (loop == GIMBAL_PID_LOOP_POSITION)
+    {
+        return config->position_integral_limit_base;
+    }
+
+    if (loop == GIMBAL_PID_LOOP_SPEED)
+    {
+        return config->speed_integral_limit_base;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 获取指定 PID 环的输出限幅百分比基准。
+ * @param config 云台控制器配置。
+ * @param loop PID 环类型。
+ * @return int32_t 百分比基准值。
+ */
+static int32_t gimbal_get_output_limit_base(const Gimbal_ControllerConfig_t *config,
+                                            enum gimbal_pid_loop loop)
+{
+    if (config == NULL)
+    {
+        return 0;
+    }
+
+    if (loop == GIMBAL_PID_LOOP_POSITION)
+    {
+        return config->position_output_limit_base;
+    }
+
+    if (loop == GIMBAL_PID_LOOP_SPEED)
+    {
+        return config->speed_output_limit_base;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 将 PID 百分比配置换算为内部 PID 配置。
+ * @param controller_config 云台控制器配置。
+ * @param loop PID 环类型。
+ * @param percent_config PID 百分比配置。
+ * @param pid_config 输出内部 PID 配置。
+ * @return int 0 表示成功，负值表示失败。
+ */
+static int gimbal_pid_config_from_percent(const Gimbal_ControllerConfig_t *controller_config,
+                                          enum gimbal_pid_loop loop,
+                                          const struct gimbal_pid_percent_config *percent_config,
+                                          Gimbal_PidConfig_t *pid_config)
+{
+    if ((controller_config == NULL) || (percent_config == NULL) || (pid_config == NULL))
+    {
+        return -EINVAL;
+    }
+
+    if ((loop != GIMBAL_PID_LOOP_POSITION) && (loop != GIMBAL_PID_LOOP_SPEED))
+    {
+        return -EINVAL;
+    }
+
+    pid_config->kp = percent_config->kp;
+    pid_config->ki = percent_config->ki;
+    pid_config->kd = percent_config->kd;
+    pid_config->integral_limit =
+        gimbal_percent_to_limit(percent_config->integral_limit_percent,
+                                gimbal_get_integral_limit_base(controller_config, loop));
+    pid_config->output_limit =
+        gimbal_percent_to_limit(percent_config->output_limit_percent,
+                                gimbal_get_output_limit_base(controller_config, loop));
+
+    return 0;
+}
+
+/**
+ * @brief 将内部 PID 配置换算为百分比配置。
+ * @param controller_config 云台控制器配置。
+ * @param loop PID 环类型。
+ * @param pid_config 内部 PID 配置。
+ * @param percent_config 输出 PID 百分比配置。
+ * @return int 0 表示成功，负值表示失败。
+ */
+static int gimbal_pid_config_to_percent(const Gimbal_ControllerConfig_t *controller_config,
+                                        enum gimbal_pid_loop loop,
+                                        const Gimbal_PidConfig_t *pid_config,
+                                        struct gimbal_pid_percent_config *percent_config)
+{
+    if ((controller_config == NULL) || (pid_config == NULL) || (percent_config == NULL))
+    {
+        return -EINVAL;
+    }
+
+    if ((loop != GIMBAL_PID_LOOP_POSITION) && (loop != GIMBAL_PID_LOOP_SPEED))
+    {
+        return -EINVAL;
+    }
+
+    percent_config->kp = pid_config->kp;
+    percent_config->ki = pid_config->ki;
+    percent_config->kd = pid_config->kd;
+    percent_config->integral_limit_percent =
+        gimbal_limit_to_percent(pid_config->integral_limit,
+                                gimbal_get_integral_limit_base(controller_config, loop));
+    percent_config->output_limit_percent =
+        gimbal_limit_to_percent(pid_config->output_limit,
+                                gimbal_get_output_limit_base(controller_config, loop));
 
     return 0;
 }
@@ -646,6 +884,9 @@ static void gimbal_axis_output_zero_current(Gimbal_Axis_t *axis)
 
     gimbal_pid_reset(&axis->position_pid);
     gimbal_pid_reset(&axis->speed_pid);
+    axis->target_speed_mrad_s = 0;
+    axis->target_speed_valid = false;
+    axis->last_position_update_ms = 0U;
 
     if (!axis->current_mode_requested)
     {
@@ -677,6 +918,9 @@ static void gimbal_axis_clear_control_state(Gimbal_Axis_t *axis)
 
     axis->target_mrad = 0;
     axis->target_valid = false;
+    axis->target_speed_mrad_s = 0;
+    axis->target_speed_valid = false;
+    axis->last_position_update_ms = 0U;
     gimbal_pid_reset(&axis->position_pid);
     gimbal_pid_reset(&axis->speed_pid);
 }
@@ -723,6 +967,9 @@ static int gimbal_axis_disable_output(Gimbal_Axis_t *axis)
     {
         axis->last_current_target = 0;
         axis->current_mode_requested = false;
+        axis->target_speed_mrad_s = 0;
+        axis->target_speed_valid = false;
+        axis->last_position_update_ms = 0U;
     }
 
     return first_ret;
@@ -909,6 +1156,36 @@ static bool gimbal_axis_get_speed_feedback(Gimbal_Controller_t *controller,
 }
 
 /**
+ * @brief 判断当前是否需要更新位置环。
+ * @param controller 云台控制器对象。
+ * @param axis 轴对象。
+ * @param now_ms 当前时间，单位毫秒。
+ * @return bool true 表示需要更新，false 表示暂不更新。
+ */
+static bool gimbal_axis_position_update_is_due(const Gimbal_Controller_t *controller,
+                                               const Gimbal_Axis_t *axis,
+                                               uint32_t now_ms)
+{
+    if ((controller == NULL) || (controller->config == NULL) || (axis == NULL))
+    {
+        return false;
+    }
+
+    if (!axis->target_speed_valid)
+    {
+        return true;
+    }
+
+    if ((now_ms - axis->last_position_update_ms) >=
+        controller->config->position_control_period_ms)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+/**
  * @brief 执行单轴控制。
  * @param controller 云台控制器对象。
  * @param axis 轴对象。
@@ -928,6 +1205,7 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
     bool target_valid;
     bool position_feedback_valid;
     bool speed_feedback_valid;
+    bool update_position_loop;
     int ret;
 
     if ((controller == NULL) || (axis == NULL) || (axis->motor == NULL))
@@ -948,11 +1226,22 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
     k_mutex_lock(&controller->lock, K_FOREVER);
     target_mrad = axis->target_mrad;
     target_valid = axis->target_valid;
-    position_feedback_valid = gimbal_axis_get_position_feedback(controller,
-                                                                axis,
-                                                                &motor_state,
-                                                                now_ms,
-                                                                &feedback_position_mrad);
+    update_position_loop = gimbal_axis_position_update_is_due(controller, axis, now_ms);
+
+    if (update_position_loop)
+    {
+        position_feedback_valid = gimbal_axis_get_position_feedback(controller,
+                                                                    axis,
+                                                                    &motor_state,
+                                                                    now_ms,
+                                                                    &feedback_position_mrad);
+    }
+    else
+    {
+        position_feedback_valid = axis->target_speed_valid;
+        feedback_position_mrad = 0;
+    }
+
     speed_feedback_valid = gimbal_axis_get_speed_feedback(controller,
                                                           axis,
                                                           &motor_state,
@@ -974,10 +1263,21 @@ static void gimbal_control_axis(Gimbal_Controller_t *controller,
         return;
     }
 
-    target_speed_mrad_s = gimbal_axis_calc_target_speed(controller,
-                                                        axis,
-                                                        target_mrad,
-                                                        feedback_position_mrad);
+    if (update_position_loop)
+    {
+        target_speed_mrad_s = gimbal_axis_calc_target_speed(controller,
+                                                            axis,
+                                                            target_mrad,
+                                                            feedback_position_mrad);
+        axis->target_speed_mrad_s = target_speed_mrad_s;
+        axis->target_speed_valid = true;
+        axis->last_position_update_ms = now_ms;
+    }
+    else
+    {
+        target_speed_mrad_s = axis->target_speed_mrad_s;
+    }
+
     current_target = gimbal_axis_calc_current_target(axis,
                                                      target_speed_mrad_s,
                                                      feedback_speed_mrad_s);
@@ -1022,7 +1322,7 @@ static void gimbal_control_thread_entry(void *arg1, void *arg2, void *arg3)
             gimbal_control_axis(controller, &controller->axes[i], now_ms);
         }
 
-        k_sleep(K_MSEC(controller->config->control_period_ms));
+        k_sleep(K_MSEC(controller->config->speed_control_period_ms));
     }
 }
 
@@ -1053,6 +1353,38 @@ static int gimbal_controller_set_rpy_target(Gimbal_Controller_t *controller,
     controller->axes[GIMBAL_AXIS_PITCH].target_valid = true;
     controller->axes[GIMBAL_AXIS_YAW].target_mrad = yaw_mrad;
     controller->axes[GIMBAL_AXIS_YAW].target_valid = true;
+    controller->target_source = source;
+    k_mutex_unlock(&controller->lock);
+
+    return 0;
+}
+
+/**
+ * @brief 设置云台单轴目标角度。
+ * @param controller 云台控制器对象。
+ * @param axis_id 云台轴编号。
+ * @param target_mrad 目标角度，单位 mrad。
+ * @param source 目标来源。
+ * @return int 0 表示成功，负值表示失败。
+ */
+static int gimbal_controller_set_axis_target(Gimbal_Controller_t *controller,
+                                             enum gimbal_axis_id axis_id,
+                                             int32_t target_mrad,
+                                             enum gimbal_target_source source)
+{
+    if (!gimbal_controller_is_ready(controller))
+    {
+        return -ENODEV;
+    }
+
+    if (!gimbal_axis_id_is_valid(axis_id))
+    {
+        return -EINVAL;
+    }
+
+    k_mutex_lock(&controller->lock, K_FOREVER);
+    controller->axes[axis_id].target_mrad = target_mrad;
+    controller->axes[axis_id].target_valid = true;
     controller->target_source = source;
     k_mutex_unlock(&controller->lock);
 
@@ -1105,7 +1437,7 @@ static int gimbal_controller_disable(Gimbal_Controller_t *controller)
  * @param axis_id 轴编号。
  * @return int 0 表示成功，负值表示失败。
  */
-static int gimbal_axis_init(Gimbal_Controller_t *controller, Gimbal_AxisId_t axis_id)
+static int gimbal_axis_init(Gimbal_Controller_t *controller, enum gimbal_axis_id axis_id)
 {
     const Gimbal_AxisConfig_t *axis_config;
     Gimbal_Axis_t *axis;
@@ -1187,7 +1519,7 @@ static int gimbal_controller_init(Gimbal_Controller_t *controller,
 
     for (i = 0U; i < config->axis_count; i++)
     {
-        ret = gimbal_axis_init(controller, (Gimbal_AxisId_t)i);
+        ret = gimbal_axis_init(controller, (enum gimbal_axis_id)i);
 
         if (ret < 0)
         {
@@ -1226,7 +1558,11 @@ static int gimbal_controller_start(Gimbal_Controller_t *controller)
                     0,
                     K_NO_WAIT);
 
-    k_thread_name_set(&controller->control_thread, "gimbal_ctrl");
+    if (IS_ENABLED(CONFIG_THREAD_NAME))
+    {
+        k_thread_name_set(&controller->control_thread, "gimbal_ctrl");
+    }
+
     controller->thread_started = true;
 
     return 0;
@@ -1256,8 +1592,9 @@ int gimbal_init(void)
     }
 
     controller->initialized = true;
-    LOG_DBG("gimbal ready: control_period=%u ms",
-            (unsigned int)controller->config->control_period_ms);
+    LOG_DBG("gimbal ready: speed_period=%u ms position_period=%u ms",
+            (unsigned int)controller->config->speed_control_period_ms,
+            (unsigned int)controller->config->position_control_period_ms);
 
     return 0;
 }
@@ -1285,6 +1622,25 @@ int gimbal_set_rpy_target(int32_t roll_mrad,
 }
 
 /**
+ * @brief 设置云台单轴目标角度。
+ * @param axis_id 云台轴编号。
+ * @param target_mrad 目标角度，单位 mrad。
+ * @param source 目标来源。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int gimbal_set_axis_target(enum gimbal_axis_id axis_id,
+                           int32_t target_mrad,
+                           enum gimbal_target_source source)
+{
+    Gimbal_Controller_t *controller = &gimbal_controller;
+
+    return gimbal_controller_set_axis_target(controller,
+                                             axis_id,
+                                             target_mrad,
+                                             source);
+}
+
+/**
  * @brief 关闭云台输出并清除控制目标和 PID 状态。
  * @return int 0 表示成功，负值表示失败。
  */
@@ -1293,6 +1649,103 @@ int gimbal_disable(void)
     Gimbal_Controller_t *controller = &gimbal_controller;
 
     return gimbal_controller_disable(controller);
+}
+
+/**
+ * @brief 设置指定轴指定环的 PID 百分比配置。
+ * @param axis_id 云台轴编号。
+ * @param loop PID 环类型。
+ * @param config PID 百分比配置。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int gimbal_set_pid_percent_config(enum gimbal_axis_id axis_id,
+                                  enum gimbal_pid_loop loop,
+                                  const struct gimbal_pid_percent_config *config)
+{
+    Gimbal_Controller_t *controller = &gimbal_controller;
+    Gimbal_PidConfig_t pid_config;
+    Gimbal_Pid_t *pid;
+    int ret;
+
+    if (!gimbal_controller_is_ready(controller))
+    {
+        return -ENODEV;
+    }
+
+    if ((!gimbal_axis_id_is_valid(axis_id)) || (config == NULL))
+    {
+        return -EINVAL;
+    }
+
+    ret = gimbal_pid_config_from_percent(controller->config, loop, config, &pid_config);
+
+    if (ret < 0)
+    {
+        return ret;
+    }
+
+    k_mutex_lock(&controller->lock, K_FOREVER);
+    pid = gimbal_axis_get_pid(&controller->axes[axis_id], loop);
+
+    if (pid == NULL)
+    {
+        k_mutex_unlock(&controller->lock);
+        return -EINVAL;
+    }
+
+    pid->config = pid_config;
+    gimbal_pid_reset(pid);
+    k_mutex_unlock(&controller->lock);
+
+    return 0;
+}
+
+/**
+ * @brief 获取指定轴指定环的 PID 百分比配置。
+ * @param axis_id 云台轴编号。
+ * @param loop PID 环类型。
+ * @param config 输出 PID 百分比配置。
+ * @return int 0 表示成功，负值表示失败。
+ */
+int gimbal_get_pid_percent_config(enum gimbal_axis_id axis_id,
+                                  enum gimbal_pid_loop loop,
+                                  struct gimbal_pid_percent_config *config)
+{
+    Gimbal_Controller_t *controller = &gimbal_controller;
+    Gimbal_PidConfig_t pid_config;
+    Gimbal_Pid_t *pid;
+    int ret;
+
+    if (!gimbal_controller_is_ready(controller))
+    {
+        return -ENODEV;
+    }
+
+    if ((!gimbal_axis_id_is_valid(axis_id)) || (config == NULL))
+    {
+        return -EINVAL;
+    }
+
+    k_mutex_lock(&controller->lock, K_FOREVER);
+    pid = gimbal_axis_get_pid(&controller->axes[axis_id], loop);
+
+    if (pid == NULL)
+    {
+        k_mutex_unlock(&controller->lock);
+        return -EINVAL;
+    }
+
+    pid_config = pid->config;
+    k_mutex_unlock(&controller->lock);
+
+    ret = gimbal_pid_config_to_percent(controller->config, loop, &pid_config, config);
+
+    if (ret < 0)
+    {
+        return ret;
+    }
+
+    return 0;
 }
 
 /**
