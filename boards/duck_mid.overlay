@@ -1,5 +1,5 @@
 &can1 {
-	bitrate = <500000>;
+	bitrate = <1000000>;
 };
 
 &usart1 {
@@ -11,7 +11,7 @@
 		compatible = "hxzp,can-protocol";
 		status = "okay";
 		can = <&can1>;
-		bitrate = <500000>;
+		bitrate = <1000000>;
 		tx-queue-len = <16>;
 		rx-queue-len = <16>;
 	};

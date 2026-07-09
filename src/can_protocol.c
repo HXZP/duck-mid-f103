@@ -15,7 +15,7 @@
 LOG_MODULE_REGISTER(can_protocol, LOG_LEVEL_INF);
 
 /** @brief 默认 CAN 波特率，单位 bit/s。 */
-#define CAN_PROTOCOL_BAUDRATE 500000U
+#define CAN_PROTOCOL_BAUDRATE 1000000U
 
 /** @brief 接收消息队列长度。 */
 #define CAN_PROTOCOL_RX_QUEUE_LEN 16

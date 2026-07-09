@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-@brief Duck Mid PCAN 云台调试上位机。
+@brief Duck Mid PCAN 电机调试上位机。
 @note 该工具只依赖 Python 标准库和 PEAK PCAN-Basic 驱动。
 """
 
@@ -24,30 +24,59 @@ CHART_HISTORY_SECONDS = 10.0
 CHART_MIN_WINDOW_SECONDS = 0.2
 CHART_MAX_WINDOW_SECONDS = 120.0
 CHART_REFRESH_MS = 100
-CHART_MAX_POINTS = 70000
 CHART_MAX_DRAW_POINTS = 1600
 EVENT_QUEUE_MAX = 5000
 EVENT_PROCESS_LIMIT = 300
 LOG_MAX_LINES = 300
+MOTOR_REPORT_PERIOD_MIN_MS = 2
+MOTOR_REPORT_PERIOD_MAX_MS = 60000
 
 PCAN_ERROR_OK = 0x00000
 PCAN_ERROR_QRCVEMPTY = 0x00020
 PCAN_MESSAGE_STANDARD = 0x00
 
-PCAN_GIMBAL_REQUEST_ID = 0x300
-PCAN_GIMBAL_RESPONSE_ID = 0x301
-PCAN_MOTOR_REPORT_BASE_ID = 0x200
+MOTOR_HOST_CMD_BASE = 0x100
+MOTOR_ACK_BASE = 0x180
+MOTOR_REPORT_BASE = 0x200
 
-GIMBAL_CMD_DISABLE = 0x02
-GIMBAL_CMD_SET_AXIS_TARGET = 0x01
-GIMBAL_CMD_SET_PID_FIELD = 0x10
-GIMBAL_CMD_GET_PID_FIELD = 0x11
+MOTOR_CMD_SET_RUN_MODE = 0x01
+MOTOR_CMD_SET_CURRENT_TARGET = 0x02
+MOTOR_CMD_SET_SPEED_TARGET = 0x03
+MOTOR_CMD_SET_POSITION_TARGET = 0x04
+MOTOR_CMD_READ_NODE_ID = 0x21
+MOTOR_CMD_READ_APP_VERSION = 0x22
+MOTOR_CMD_SET_REPORT_CONFIG = 0x23
+MOTOR_CMD_READ_REPORT_CONFIG = 0x24
 
-GIMBAL_STATUS_TEXT = {
-    0: "OK",
-    1: "INVALID_CMD",
-    2: "INVALID_PARAM",
-    3: "EXEC_FAILED",
+MOTOR_STATUS_TEXT = {
+    0x00: "OK",
+    0x01: "INVALID_CMD",
+    0x02: "INVALID_PARAM",
+    0x03: "INVALID_MODE",
+    0x04: "CAN_ERROR",
+}
+
+MOTOR_COMMAND_TEXT = {
+    MOTOR_CMD_SET_RUN_MODE: "set_run_mode",
+    MOTOR_CMD_SET_CURRENT_TARGET: "set_current",
+    MOTOR_CMD_SET_SPEED_TARGET: "set_speed",
+    MOTOR_CMD_SET_POSITION_TARGET: "set_position",
+    MOTOR_CMD_READ_NODE_ID: "read_node",
+    MOTOR_CMD_READ_APP_VERSION: "read_version",
+    MOTOR_CMD_SET_REPORT_CONFIG: "set_report",
+    MOTOR_CMD_READ_REPORT_CONFIG: "read_report",
+}
+
+MOTOR_MODES = {
+    "current": 0,
+    "speed": 1,
+    "position": 2,
+}
+
+MOTOR_NODE_NAMES = {
+    0x01: "pitch",
+    0x02: "yaw",
+    0x03: "roll",
 }
 
 PCAN_CHANNELS = {
@@ -84,39 +113,6 @@ PCAN_BITRATES = {
     "125K": 0x031C,
 }
 
-MOTOR_NODE_NAMES = {
-    0x01: "pitch",
-    0x02: "yaw",
-    0x03: "roll",
-}
-
-PID_AXIS_IDS = {
-    "roll": 0,
-    "pitch": 1,
-    "yaw": 2,
-}
-
-PID_LOOP_IDS = {
-    "position": 0,
-    "speed": 1,
-}
-
-PID_FIELD_IDS = {
-    "kp": 0,
-    "ki": 1,
-    "kd": 2,
-    "integral_limit_percent": 3,
-    "output_limit_percent": 4,
-}
-
-PID_FIELD_ORDER = [
-    "kp",
-    "ki",
-    "kd",
-    "integral_limit_percent",
-    "output_limit_percent",
-]
-
 
 class TPCANMsg(ctypes.Structure):
     """@brief PCAN-Basic CAN 报文结构。"""
@@ -141,14 +137,23 @@ class TPCANTimestamp(ctypes.Structure):
 
 @dataclass
 class MotorState:
-    """@brief 单个电机的接收状态。"""
+    """@brief 单个电机的接收和命令状态。"""
 
     name: str
     node_id: int
     position_mrad: int | None = None
     speed_mrad_s: int | None = None
-    last_update_ms: int | None = None
-    rx_count: int = 0
+    last_report_ms: int | None = None
+    report_count: int = 0
+    ack_count: int = 0
+    tx_count: int = 0
+    last_ack_cmd: int | None = None
+    last_ack_status: int | None = None
+    last_ack_ms: int | None = None
+    version: str = "--"
+    reported_node_id: int | None = None
+    report_enabled: bool | None = None
+    report_period_ms: int | None = None
 
 
 @dataclass
@@ -162,14 +167,14 @@ class MotorReportEvent:
 
 
 @dataclass
-class PidResponseEvent:
-    """@brief 云台 PID 调试响应事件。"""
+class MotorAckEvent:
+    """@brief 电机应答事件。"""
 
+    node_id: int
     command: int
     status: int
-    axis_id: int
-    selector: int
-    value: int
+    payload: bytes
+    timestamp_ms: int
 
 
 @dataclass
@@ -203,6 +208,24 @@ def int32_to_le(value: int) -> bytes:
     @return bytes 小端 int32 字节。
     """
     return int(value).to_bytes(4, byteorder="little", signed=True)
+
+
+def uint16_to_le(value: int) -> bytes:
+    """
+    @brief 将整数编码为小端 uint16。
+    @param value 输入整数。
+    @return bytes 小端 uint16 字节。
+    """
+    return int(value).to_bytes(2, byteorder="little", signed=False)
+
+
+def uint16_from_le(data: bytes) -> int:
+    """
+    @brief 从小端字节解析 uint16。
+    @param data 输入字节。
+    @return int 解析出的无符号 16 位整数。
+    """
+    return int.from_bytes(data, byteorder="little", signed=False)
 
 
 def mrad_to_degree(value_mrad: int | None) -> str:
@@ -266,31 +289,79 @@ def channel_value_from_label(channel_label: str) -> int:
     return parse_int_auto(stripped_text)
 
 
-def make_pid_selector(loop_name: str, field_name: str) -> int:
+def node_label_from_id(node_id: int) -> str:
     """
-    @brief 生成 mid 云台 PID 调试选择字节。
-    @param loop_name PID 环名称。
-    @param field_name PID 字段名称。
-    @return int 选择字节。
+    @brief 根据节点 ID 生成节点下拉框文本。
+    @param node_id 节点 ID。
+    @return str 下拉框文本。
     """
-    loop = PID_LOOP_IDS[loop_name]
-    field = PID_FIELD_IDS[field_name]
+    name = MOTOR_NODE_NAMES.get(node_id)
 
-    return (loop << 4) | field
+    if name is None:
+        return f"0x{node_id:02X}"
+
+    return f"{name} (0x{node_id:02X})"
 
 
-def find_key_by_value(items: dict[str, int], value: int) -> str:
+def node_id_from_label(node_label: str) -> int:
     """
-    @brief 根据字典值查找字典键。
-    @param items 字典对象。
-    @param value 目标值。
-    @return str 找到的键，未找到时返回数值字符串。
+    @brief 从节点下拉框文本解析节点 ID。
+    @param node_label 节点下拉框文本。
+    @return int 节点 ID。
     """
-    for key, item_value in items.items():
-        if item_value == value:
-            return key
+    stripped_text = node_label.strip()
 
-    return str(value)
+    for node_id, node_name in MOTOR_NODE_NAMES.items():
+        if stripped_text.startswith(node_name):
+            return node_id
+
+    if "(0x" in stripped_text and stripped_text.endswith(")"):
+        start = stripped_text.rfind("(0x") + 1
+        return parse_int_auto(stripped_text[start:-1])
+
+    return parse_int_auto(stripped_text)
+
+
+def command_text(command: int | None) -> str:
+    """
+    @brief 获取命令码显示文本。
+    @param command 命令码。
+    @return str 命令码显示文本。
+    """
+    if command is None:
+        return "--"
+
+    name = MOTOR_COMMAND_TEXT.get(command, "cmd")
+
+    return f"{name}(0x{command:02X})"
+
+
+def status_text(status: int | None) -> str:
+    """
+    @brief 获取状态码显示文本。
+    @param status 状态码。
+    @return str 状态码显示文本。
+    """
+    if status is None:
+        return "--"
+
+    return MOTOR_STATUS_TEXT.get(status, f"0x{status:02X}")
+
+
+def report_config_text(enabled: bool | None, period_ms: int | None) -> str:
+    """
+    @brief 格式化主动上报配置。
+    @param enabled 主动上报是否开启。
+    @param period_ms 主动上报周期，单位毫秒。
+    @return str 主动上报配置文本。
+    """
+    if enabled is None or period_ms is None:
+        return "--"
+
+    if period_ms <= 0:
+        return f"{1 if enabled else 0}/--"
+
+    return f"{1 if enabled else 0}/{period_ms}ms({1000.0 / period_ms:.1f}Hz)"
 
 
 class PcanBasic:
@@ -421,7 +492,7 @@ class PcanBasic:
 
 
 class PcanClient:
-    """@brief PCAN 收发线程封装。"""
+    """@brief PCAN 电机协议客户端。"""
 
     def __init__(self, event_queue: queue.Queue[object]) -> None:
         """
@@ -455,7 +526,7 @@ class PcanClient:
         self.channel = channel
         self.running.set()
         self.thread = threading.Thread(target=self._read_worker,
-                                       name="pcan-read",
+                                       name="pcan-motor-read",
                                        daemon=True)
         self.thread.start()
 
@@ -507,88 +578,108 @@ class PcanClient:
         if result != PCAN_ERROR_OK:
             raise RuntimeError(self.basic.get_error_text(result))
 
-    def send_pid_get(self, axis_name: str, loop_name: str, field_name: str) -> None:
+    def send_motor_command(self, node_id: int, payload: bytes) -> None:
         """
-        @brief 发送 PID 字段读取请求。
-        @param axis_name 云台轴名称。
-        @param loop_name PID 环名称。
-        @param field_name PID 字段名称。
+        @brief 向指定节点发送电机命令。
+        @param node_id 目标节点 ID。
+        @param payload 8 字节电机协议负载。
         @return None
         """
-        axis_id = PID_AXIS_IDS[axis_name]
-        selector = make_pid_selector(loop_name, field_name)
-        payload = bytes([GIMBAL_CMD_GET_PID_FIELD, axis_id, selector, 0, 0, 0, 0, 0])
-        self.send_frame(PCAN_GIMBAL_REQUEST_ID, payload)
+        if len(payload) != 8:
+            raise ValueError("电机命令负载必须为 8 字节")
 
-    def send_pid_get_all(self, axis_name: str, loop_name: str) -> None:
-        """
-        @brief 发送整组 PID 字段读取请求。
-        @param axis_name 云台轴名称。
-        @param loop_name PID 环名称。
-        @return None
-        """
-        for field_name in PID_FIELD_ORDER:
-            self.send_pid_get(axis_name, loop_name, field_name)
-            time.sleep(0.002)
+        self.send_frame(MOTOR_HOST_CMD_BASE + node_id, payload)
 
-    def send_pid_set(self,
-                     axis_name: str,
-                     loop_name: str,
-                     field_name: str,
-                     value: int) -> None:
+    def send_run_mode(self, node_id: int, enable: bool, mode_id: int) -> None:
         """
-        @brief 发送 PID 字段设置请求。
-        @param axis_name 云台轴名称。
-        @param loop_name PID 环名称。
-        @param field_name PID 字段名称。
-        @param value 字段值。
+        @brief 发送运行模式和使能命令。
+        @param node_id 目标节点 ID。
+        @param enable true 表示使能，false 表示停机。
+        @param mode_id 控制模式编号。
         @return None
         """
-        axis_id = PID_AXIS_IDS[axis_name]
-        selector = make_pid_selector(loop_name, field_name)
-        payload = bytes([GIMBAL_CMD_SET_PID_FIELD, axis_id, selector])
-        payload += int32_to_le(value)
-        payload += bytes([0])
-        self.send_frame(PCAN_GIMBAL_REQUEST_ID, payload)
+        payload = bytes([
+            MOTOR_CMD_SET_RUN_MODE,
+            1 if enable else 0,
+            mode_id,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ])
+        self.send_motor_command(node_id, payload)
 
-    def send_pid_set_all(self,
-                         axis_name: str,
-                         loop_name: str,
-                         values: dict[str, int]) -> None:
+    def send_current_target(self, node_id: int, target: int) -> None:
         """
-        @brief 发送整组 PID 字段设置请求。
-        @param axis_name 云台轴名称。
-        @param loop_name PID 环名称。
-        @param values PID 字段值表。
+        @brief 发送电流目标命令。
+        @param node_id 目标节点 ID。
+        @param target 电流目标控制量。
         @return None
         """
-        for field_name in PID_FIELD_ORDER:
-            self.send_pid_set(axis_name,
-                              loop_name,
-                              field_name,
-                              values[field_name])
-            time.sleep(0.002)
+        payload = bytes([MOTOR_CMD_SET_CURRENT_TARGET])
+        payload += int32_to_le(target)
+        payload += bytes([0, 0, 0])
+        self.send_motor_command(node_id, payload)
 
-    def send_axis_target(self, axis_name: str, target_mrad: int) -> None:
+    def send_speed_target(self, node_id: int, target_mrad_s: int) -> None:
         """
-        @brief 发送单轴目标角度设置请求。
-        @param axis_name 云台轴名称。
-        @param target_mrad 目标角度，单位 mrad。
+        @brief 发送速度目标命令。
+        @param node_id 目标节点 ID。
+        @param target_mrad_s 速度目标，单位 mrad/s。
         @return None
         """
-        axis_id = PID_AXIS_IDS[axis_name]
-        payload = bytes([GIMBAL_CMD_SET_AXIS_TARGET, axis_id])
+        payload = bytes([MOTOR_CMD_SET_SPEED_TARGET])
+        payload += int32_to_le(target_mrad_s)
+        payload += bytes([0, 0, 0])
+        self.send_motor_command(node_id, payload)
+
+    def send_position_target(self, node_id: int, target_mrad: int) -> None:
+        """
+        @brief 发送位置目标命令。
+        @param node_id 目标节点 ID。
+        @param target_mrad 位置目标，单位 mrad。
+        @return None
+        """
+        payload = bytes([MOTOR_CMD_SET_POSITION_TARGET])
         payload += int32_to_le(target_mrad)
-        payload += bytes([0, 0])
-        self.send_frame(PCAN_GIMBAL_REQUEST_ID, payload)
+        payload += bytes([0, 0, 0])
+        self.send_motor_command(node_id, payload)
 
-    def send_disable(self) -> None:
+    def send_report_config(self, node_id: int, enable: bool, period_ms: int) -> None:
         """
-        @brief 发送关闭云台输出命令。
+        @brief 发送主动上报配置命令。
+        @param node_id 目标节点 ID。
+        @param enable true 表示开启主动上报，false 表示关闭。
+        @param period_ms 上报周期，单位毫秒。
         @return None
         """
-        payload = bytes([GIMBAL_CMD_DISABLE, 0, 0, 0, 0, 0, 0, 0])
-        self.send_frame(PCAN_GIMBAL_REQUEST_ID, payload)
+        payload = bytes([
+            MOTOR_CMD_SET_REPORT_CONFIG,
+            1 if enable else 0,
+        ])
+        payload += uint16_to_le(period_ms)
+        payload += bytes([0, 0, 0, 0])
+        self.send_motor_command(node_id, payload)
+
+    def send_simple_command(self, node_id: int, command: int) -> None:
+        """
+        @brief 发送无参数电机命令。
+        @param node_id 目标节点 ID。
+        @param command 命令码。
+        @return None
+        """
+        payload = bytes([command, 0, 0, 0, 0, 0, 0, 0])
+        self.send_motor_command(node_id, payload)
+
+    def send_stop_output(self, node_id: int) -> None:
+        """
+        @brief 停止指定电机输出。
+        @param node_id 目标节点 ID。
+        @return None
+        """
+        self.send_current_target(node_id, 0)
+        self.send_run_mode(node_id, False, MOTOR_MODES["current"])
 
     def _read_worker(self) -> None:
         """
@@ -627,35 +718,31 @@ class PcanClient:
         """
         data = bytes(message.DATA[:message.LEN])
 
-        if message.ID in range(PCAN_MOTOR_REPORT_BASE_ID + 1,
-                               PCAN_MOTOR_REPORT_BASE_ID + 4):
+        if message.ID in range(MOTOR_REPORT_BASE + 1, MOTOR_REPORT_BASE + 0x80):
             if len(data) >= 8:
-                node_id = message.ID - PCAN_MOTOR_REPORT_BASE_ID
-                position_mrad = int32_from_le(data[0:4])
-                speed_mrad_s = int32_from_le(data[4:8])
-                event = MotorReportEvent(node_id=node_id,
-                                         position_mrad=position_mrad,
-                                         speed_mrad_s=speed_mrad_s,
+                event = MotorReportEvent(node_id=message.ID - MOTOR_REPORT_BASE,
+                                         position_mrad=int32_from_le(data[0:4]),
+                                         speed_mrad_s=int32_from_le(data[4:8]),
                                          timestamp_ms=now_monotonic_ms())
-                self._put_motor_event(event)
+                self._put_motor_report(event)
 
             return
 
-        if message.ID == PCAN_GIMBAL_RESPONSE_ID:
-            if len(data) >= 8:
-                event = PidResponseEvent(command=data[0],
-                                         status=data[1],
-                                         axis_id=data[2],
-                                         selector=data[3],
-                                         value=int32_from_le(data[4:8]))
+        if message.ID in range(MOTOR_ACK_BASE + 1, MOTOR_ACK_BASE + 0x80):
+            if len(data) >= 2:
+                event = MotorAckEvent(node_id=message.ID - MOTOR_ACK_BASE,
+                                      command=data[0],
+                                      status=data[1],
+                                      payload=data,
+                                      timestamp_ms=now_monotonic_ms())
                 self.event_queue.put(event)
 
-    def _put_motor_event(self, event: MotorReportEvent) -> None:
+    def _put_motor_report(self, event: MotorReportEvent) -> None:
         """
-        @brief 投递电机上报事件。
+        @brief 投递电机主动上报事件。
         @param event 电机主动上报事件。
         @return None
-        @note 电机上报频率高，队列满时丢弃新采样，避免 GUI 长时间运行后卡死。
+        @note 电机上报频率较高，队列过长时丢弃新采样以保护 GUI。
         """
         if self.event_queue.qsize() >= EVENT_QUEUE_MAX:
             return
@@ -663,8 +750,8 @@ class PcanClient:
         self.event_queue.put(event)
 
 
-class GimbalToolApp:
-    """@brief Duck Mid PCAN 云台调试 GUI。"""
+class MotorToolApp:
+    """@brief Duck Mid PCAN 电机调试 GUI。"""
 
     def __init__(self, root: tk.Tk, default_channel: int, default_bitrate: str) -> None:
         """
@@ -675,34 +762,33 @@ class GimbalToolApp:
         @return None
         """
         self.root = root
-        self.root.title("Duck Mid PCAN Gimbal Tool")
+        self.root.title("Duck Mid PCAN Motor Tool")
         self.events: queue.Queue[object] = queue.Queue()
         self.client = PcanClient(self.events)
-        self.motor_states = {
+        self.motor_states: dict[int, MotorState] = {
             node_id: MotorState(name=name, node_id=node_id)
             for node_id, name in MOTOR_NODE_NAMES.items()
         }
         self.channel_var = tk.StringVar(value=channel_label_from_value(default_channel))
         self.bitrate_var = tk.StringVar(value=default_bitrate)
-        self.axis_var = tk.StringVar(value="pitch")
-        self.loop_var = tk.StringVar(value="speed")
+        self.node_var = tk.StringVar(value=node_label_from_id(0x01))
+        self.enable_var = tk.BooleanVar(value=True)
+        self.mode_var = tk.StringVar(value="current")
         self.target_var = tk.StringVar(value="0")
+        self.report_enable_var = tk.BooleanVar(value=True)
+        self.report_hz_var = tk.StringVar(value="500")
         self.chart_window_var = tk.StringVar(value=str(int(CHART_HISTORY_SECONDS)))
-        self.pid_value_vars = {
-            field_name: tk.StringVar(value="0")
-            for field_name in PID_FIELD_ORDER
-        }
         self.status_var = tk.StringVar(value="未连接")
         self.connected = False
-        self.chart_history = {
-            node_id: deque(maxlen=CHART_MAX_POINTS)
+        self.chart_history: dict[int, deque[tuple[int, int, int]]] = {
+            node_id: deque()
             for node_id in MOTOR_NODE_NAMES
         }
 
         self._build_layout()
         self._refresh_motor_table()
-        self._refresh_chart()
         self._process_events()
+        self._refresh_chart()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_layout(self) -> None:
@@ -711,9 +797,10 @@ class GimbalToolApp:
         @return None
         """
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=0)
+        self.root.rowconfigure(1, weight=1)
         self.root.rowconfigure(2, weight=0)
         self.root.rowconfigure(3, weight=1)
+        self.root.rowconfigure(4, weight=0)
 
         top_frame = ttk.Frame(self.root, padding=8)
         top_frame.grid(row=0, column=0, sticky="ew")
@@ -743,8 +830,9 @@ class GimbalToolApp:
                                                                 sticky="w")
 
         self._build_motor_table()
-        self._build_pid_panel()
+        self._build_control_panel()
         self._build_chart_panel()
+        self._build_log_panel()
 
     def _build_motor_table(self) -> None:
         """
@@ -756,47 +844,149 @@ class GimbalToolApp:
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
-        columns = ("node", "position", "degree", "speed", "age", "count")
+        columns = (
+            "node",
+            "position",
+            "degree",
+            "speed",
+            "age",
+            "report",
+            "version",
+            "report_cfg",
+            "ack",
+            "tx",
+        )
         self.motor_table = ttk.Treeview(table_frame,
                                         columns=columns,
                                         show="tree headings",
-                                        height=4)
+                                        height=8)
         self.motor_table.heading("#0", text="电机")
         self.motor_table.heading("node", text="节点")
         self.motor_table.heading("position", text="位置 mrad")
         self.motor_table.heading("degree", text="位置 deg")
         self.motor_table.heading("speed", text="速度 mrad/s")
         self.motor_table.heading("age", text="更新 ms")
-        self.motor_table.heading("count", text="收包")
+        self.motor_table.heading("report", text="上报")
+        self.motor_table.heading("version", text="版本")
+        self.motor_table.heading("report_cfg", text="上报配置")
+        self.motor_table.heading("ack", text="最后应答")
+        self.motor_table.heading("tx", text="发送")
 
         self.motor_table.column("#0", width=90, anchor="center")
         self.motor_table.column("node", width=70, anchor="center")
-        self.motor_table.column("position", width=120, anchor="e")
-        self.motor_table.column("degree", width=100, anchor="e")
-        self.motor_table.column("speed", width=120, anchor="e")
-        self.motor_table.column("age", width=90, anchor="e")
-        self.motor_table.column("count", width=80, anchor="e")
+        self.motor_table.column("position", width=110, anchor="e")
+        self.motor_table.column("degree", width=90, anchor="e")
+        self.motor_table.column("speed", width=110, anchor="e")
+        self.motor_table.column("age", width=80, anchor="e")
+        self.motor_table.column("report", width=80, anchor="e")
+        self.motor_table.column("version", width=80, anchor="center")
+        self.motor_table.column("report_cfg", width=130, anchor="center")
+        self.motor_table.column("ack", width=150, anchor="center")
+        self.motor_table.column("tx", width=70, anchor="e")
         self.motor_table.grid(row=0, column=0, sticky="nsew")
 
         for node_id in (0x01, 0x02, 0x03):
-            state = self.motor_states[node_id]
-            self.motor_table.insert("",
-                                    "end",
-                                    iid=str(node_id),
-                                    text=state.name,
-                                    values=(f"0x{node_id:02X}",
-                                            "--",
-                                            "--",
-                                            "--",
-                                            "--",
-                                            "0"))
+            self._ensure_table_item(node_id)
+
+    def _build_control_panel(self) -> None:
+        """
+        @brief 创建电机控制面板。
+        @return None
+        """
+        control_frame = ttk.LabelFrame(self.root, text="电机控制", padding=8)
+        control_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        control_frame.columnconfigure(13, weight=1)
+
+        node_labels = [
+            node_label_from_id(node_id)
+            for node_id in (0x01, 0x02, 0x03)
+        ]
+
+        ttk.Label(control_frame, text="电机").grid(row=0, column=0, padx=(0, 4))
+        ttk.Combobox(control_frame,
+                     textvariable=self.node_var,
+                     values=node_labels,
+                     width=12).grid(row=0, column=1, padx=(0, 8))
+        ttk.Checkbutton(control_frame,
+                        text="使能",
+                        variable=self.enable_var).grid(row=0, column=2, padx=(0, 8))
+        ttk.Label(control_frame, text="模式").grid(row=0, column=3, padx=(0, 4))
+        ttk.Combobox(control_frame,
+                     textvariable=self.mode_var,
+                     values=list(MOTOR_MODES.keys()),
+                     width=10,
+                     state="readonly").grid(row=0, column=4, padx=(0, 8))
+        ttk.Button(control_frame,
+                   text="设置模式",
+                   command=self._send_run_mode).grid(row=0, column=5, padx=(0, 8))
+
+        ttk.Label(control_frame, text="目标").grid(row=0, column=6, padx=(0, 4))
+        ttk.Entry(control_frame,
+                  textvariable=self.target_var,
+                  width=12).grid(row=0, column=7, padx=(0, 8))
+        ttk.Button(control_frame,
+                   text="发送目标",
+                   command=self._send_target_by_mode).grid(row=0, column=8, padx=(0, 8))
+        ttk.Button(control_frame,
+                   text="停止当前",
+                   command=self._send_stop_selected).grid(row=0, column=9, padx=(0, 8))
+        ttk.Button(control_frame,
+                   text="停止全部",
+                   command=self._send_stop_all).grid(row=0, column=10, padx=(0, 8))
+
+        ttk.Label(control_frame, text="上报 Hz").grid(row=1, column=0, padx=(0, 4), pady=(8, 0))
+        ttk.Entry(control_frame,
+                  textvariable=self.report_hz_var,
+                  width=12).grid(row=1, column=1, padx=(0, 8), pady=(8, 0))
+        ttk.Checkbutton(control_frame,
+                        text="开启上报",
+                        variable=self.report_enable_var).grid(row=1,
+                                                             column=2,
+                                                             padx=(0, 8),
+                                                             pady=(8, 0))
+        ttk.Button(control_frame,
+                   text="设置上报",
+                   command=self._send_report_config).grid(row=1,
+                                                        column=3,
+                                                        padx=(0, 8),
+                                                        pady=(8, 0))
+        ttk.Button(control_frame,
+                   text="读取上报",
+                   command=self._send_read_report).grid(row=1,
+                                                      column=4,
+                                                      padx=(0, 8),
+                                                      pady=(8, 0))
+        ttk.Button(control_frame,
+                   text="读取版本",
+                   command=self._send_read_version).grid(row=1,
+                                                       column=5,
+                                                       padx=(0, 8),
+                                                       pady=(8, 0))
+        ttk.Button(control_frame,
+                   text="读取节点",
+                   command=self._send_read_node).grid(row=1,
+                                                    column=6,
+                                                    padx=(0, 8),
+                                                    pady=(8, 0))
+        ttk.Button(control_frame,
+                   text="读取当前",
+                   command=self._send_read_selected).grid(row=1,
+                                                       column=7,
+                                                       padx=(0, 8),
+                                                       pady=(8, 0))
+        ttk.Button(control_frame,
+                   text="读取全部",
+                   command=self._send_read_all).grid(row=1,
+                                                   column=8,
+                                                   padx=(0, 8),
+                                                   pady=(8, 0))
 
     def _build_chart_panel(self) -> None:
         """
-        @brief 创建电机位置和速度曲线区域。
+        @brief 创建当前电机位置和速度曲线区域。
         @return None
         """
-        chart_frame = ttk.LabelFrame(self.root, text="当前轴曲线", padding=8)
+        chart_frame = ttk.LabelFrame(self.root, text="当前电机曲线", padding=8)
         chart_frame.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 8))
         chart_frame.rowconfigure(1, weight=1)
         chart_frame.columnconfigure(0, weight=1)
@@ -808,7 +998,7 @@ class GimbalToolApp:
                   textvariable=self.chart_window_var,
                   width=8).grid(row=0, column=1, padx=(0, 8))
         ttk.Label(chart_toolbar,
-                  text="横轴按最近窗口数据铺满").grid(row=0, column=2, sticky="w")
+                  text="蓝色=位置，橙色=速度").grid(row=0, column=2, sticky="w")
 
         self.chart_canvas = tk.Canvas(chart_frame,
                                       height=260,
@@ -816,62 +1006,17 @@ class GimbalToolApp:
                                       highlightthickness=0)
         self.chart_canvas.grid(row=1, column=0, sticky="nsew")
 
-    def _build_pid_panel(self) -> None:
+    def _build_log_panel(self) -> None:
         """
-        @brief 创建 PID 调试面板。
+        @brief 创建日志面板。
         @return None
         """
-        pid_frame = ttk.LabelFrame(self.root, text="PID 调试", padding=8)
-        pid_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-        pid_frame.columnconfigure(12, weight=1)
+        log_frame = ttk.LabelFrame(self.root, text="日志", padding=8)
+        log_frame.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 8))
+        log_frame.columnconfigure(0, weight=1)
 
-        ttk.Label(pid_frame, text="轴").grid(row=0, column=0, padx=(0, 4))
-        ttk.Combobox(pid_frame,
-                     textvariable=self.axis_var,
-                     values=list(PID_AXIS_IDS.keys()),
-                     width=8,
-                     state="readonly").grid(row=0, column=1, padx=(0, 8))
-
-        ttk.Label(pid_frame, text="环").grid(row=0, column=2, padx=(0, 4))
-        ttk.Combobox(pid_frame,
-                     textvariable=self.loop_var,
-                     values=list(PID_LOOP_IDS.keys()),
-                     width=10,
-                     state="readonly").grid(row=0, column=3, padx=(0, 8))
-
-        ttk.Button(pid_frame, text="读取整组", command=self._send_pid_get_all).grid(row=0,
-                                                                                  column=4,
-                                                                                  padx=(0, 8))
-        ttk.Button(pid_frame, text="设置整组", command=self._send_pid_set_all).grid(row=0,
-                                                                                  column=5,
-                                                                                  padx=(0, 8))
-        ttk.Button(pid_frame,
-                   text="关闭输出",
-                   command=self._send_disable).grid(row=0, column=6, padx=(0, 8))
-
-        ttk.Label(pid_frame, text="目标 mrad").grid(row=0, column=7, padx=(8, 4))
-        ttk.Entry(pid_frame,
-                  textvariable=self.target_var,
-                  width=12).grid(row=0, column=8, padx=(0, 8))
-        ttk.Button(pid_frame,
-                   text="设置目标",
-                   command=self._send_axis_target).grid(row=0, column=9, padx=(0, 8))
-
-        for column_index, field_name in enumerate(PID_FIELD_ORDER):
-            ttk.Label(pid_frame, text=field_name).grid(row=1,
-                                                       column=column_index,
-                                                       padx=(0, 4),
-                                                       pady=(8, 0),
-                                                       sticky="w")
-            ttk.Entry(pid_frame,
-                      textvariable=self.pid_value_vars[field_name],
-                      width=14).grid(row=2,
-                                     column=column_index,
-                                     padx=(0, 8),
-                                     sticky="ew")
-
-        self.log_text = tk.Text(pid_frame, height=7, width=100)
-        self.log_text.grid(row=3, column=0, columnspan=13, sticky="ew", pady=(8, 0))
+        self.log_text = tk.Text(log_frame, height=8, width=120)
+        self.log_text.grid(row=0, column=0, sticky="ew")
         self.log_text.configure(state="disabled")
 
     def _toggle_connection(self) -> None:
@@ -925,50 +1070,250 @@ class GimbalToolApp:
         self.status_var.set(f"找到 {len(labels)} 个 PCAN 通道")
         self._append_log("Available channels: " + ", ".join(labels))
 
-    def _send_pid_get_all(self) -> None:
+    def _selected_node_id(self) -> int:
         """
-        @brief 发送整组 PID 读取请求。
+        @brief 获取当前选中的电机节点 ID。
+        @return int 节点 ID。
+        """
+        node_id = node_id_from_label(self.node_var.get())
+
+        if node_id <= 0 or node_id > 0x7F:
+            raise ValueError("节点 ID 范围必须为 0x01~0x7F")
+
+        return node_id
+
+    def _report_period_from_hz(self) -> int:
+        """
+        @brief 根据界面上报频率计算周期。
+        @return int 上报周期，单位毫秒。
+        """
+        hz = parse_int_auto(self.report_hz_var.get())
+
+        if hz <= 0:
+            raise ValueError("上报频率必须大于 0")
+
+        period_ms = int(round(1000.0 / hz))
+
+        if period_ms < MOTOR_REPORT_PERIOD_MIN_MS:
+            raise ValueError("上报周期不能小于 2ms，最高建议 500Hz")
+
+        if period_ms > MOTOR_REPORT_PERIOD_MAX_MS:
+            raise ValueError("上报周期不能超过 60000ms")
+
+        return period_ms
+
+    def _get_or_create_state(self, node_id: int) -> MotorState:
+        """
+        @brief 获取或创建电机状态对象。
+        @param node_id 节点 ID。
+        @return MotorState 电机状态对象。
+        """
+        state = self.motor_states.get(node_id)
+
+        if state is not None:
+            return state
+
+        state = MotorState(name=f"node{node_id}", node_id=node_id)
+        self.motor_states[node_id] = state
+        self._ensure_table_item(node_id)
+
+        return state
+
+    def _ensure_table_item(self, node_id: int) -> None:
+        """
+        @brief 确保表格中存在指定节点。
+        @param node_id 节点 ID。
+        @return None
+        """
+        iid = str(node_id)
+
+        if self.motor_table.exists(iid):
+            return
+
+        state = self.motor_states[node_id]
+        self.motor_table.insert("",
+                                "end",
+                                iid=iid,
+                                text=state.name,
+                                values=(f"0x{node_id:02X}",
+                                        "--",
+                                        "--",
+                                        "--",
+                                        "--",
+                                        "0",
+                                        "--",
+                                        "--",
+                                        "--",
+                                        "0"))
+
+    def _record_tx(self, node_id: int) -> None:
+        """
+        @brief 记录一次发送计数。
+        @param node_id 节点 ID。
+        @return None
+        """
+        state = self._get_or_create_state(node_id)
+        state.tx_count += 1
+
+    def _send_run_mode(self) -> None:
+        """
+        @brief 发送当前选中电机运行模式。
         @return None
         """
         try:
-            self.client.send_pid_get_all(self.axis_var.get(), self.loop_var.get())
+            node_id = self._selected_node_id()
+            mode_id = MOTOR_MODES[self.mode_var.get()]
+            self.client.send_run_mode(node_id, self.enable_var.get(), mode_id)
+            self._record_tx(node_id)
+            self._append_log(
+                f"tx node=0x{node_id:02X} set_run_mode enable={int(self.enable_var.get())} "
+                f"mode={self.mode_var.get()}"
+            )
         except Exception as exc:
             messagebox.showerror("发送失败", str(exc))
 
-    def _send_pid_set_all(self) -> None:
+    def _send_target_by_mode(self) -> None:
         """
-        @brief 发送整组 PID 设置请求。
+        @brief 按当前模式发送目标值。
         @return None
         """
         try:
-            values = {
-                field_name: parse_int_auto(self.pid_value_vars[field_name].get())
-                for field_name in PID_FIELD_ORDER
-            }
-            self.client.send_pid_set_all(self.axis_var.get(),
-                                         self.loop_var.get(),
-                                         values)
+            node_id = self._selected_node_id()
+            target = parse_int_auto(self.target_var.get())
+            mode_name = self.mode_var.get()
+
+            if mode_name == "current":
+                self.client.send_current_target(node_id, target)
+            elif mode_name == "speed":
+                self.client.send_speed_target(node_id, target)
+            else:
+                self.client.send_position_target(node_id, target)
+
+            self._record_tx(node_id)
+            self._append_log(f"tx node=0x{node_id:02X} target mode={mode_name} value={target}")
         except Exception as exc:
             messagebox.showerror("发送失败", str(exc))
 
-    def _send_axis_target(self) -> None:
+    def _send_stop_selected(self) -> None:
         """
-        @brief 发送单轴目标角度设置请求。
+        @brief 停止当前选中电机输出。
         @return None
         """
         try:
-            target_mrad = parse_int_auto(self.target_var.get())
-            self.client.send_axis_target(self.axis_var.get(), target_mrad)
+            node_id = self._selected_node_id()
+            self.client.send_stop_output(node_id)
+            self._record_tx(node_id)
+            self._record_tx(node_id)
+            self._append_log(f"tx node=0x{node_id:02X} stop_output")
         except Exception as exc:
             messagebox.showerror("发送失败", str(exc))
 
-    def _send_disable(self) -> None:
+    def _send_stop_all(self) -> None:
         """
-        @brief 发送关闭云台输出请求。
+        @brief 停止全部已知电机输出。
         @return None
         """
         try:
-            self.client.send_disable()
+            for node_id in (0x01, 0x02, 0x03):
+                self.client.send_stop_output(node_id)
+                self._record_tx(node_id)
+                self._record_tx(node_id)
+                time.sleep(0.002)
+
+            self._append_log("tx stop_output all motors")
+        except Exception as exc:
+            messagebox.showerror("发送失败", str(exc))
+
+    def _send_report_config(self) -> None:
+        """
+        @brief 设置当前选中电机主动上报配置。
+        @return None
+        """
+        try:
+            node_id = self._selected_node_id()
+            period_ms = self._report_period_from_hz()
+            self.client.send_report_config(node_id, self.report_enable_var.get(), period_ms)
+            self._record_tx(node_id)
+            self._append_log(
+                f"tx node=0x{node_id:02X} set_report enable={int(self.report_enable_var.get())} "
+                f"period={period_ms}ms"
+            )
+        except Exception as exc:
+            messagebox.showerror("发送失败", str(exc))
+
+    def _send_read_report(self) -> None:
+        """
+        @brief 请求读取当前选中电机主动上报配置。
+        @return None
+        """
+        self._send_simple_selected(MOTOR_CMD_READ_REPORT_CONFIG)
+
+    def _send_read_version(self) -> None:
+        """
+        @brief 请求读取当前选中电机版本号。
+        @return None
+        """
+        self._send_simple_selected(MOTOR_CMD_READ_APP_VERSION)
+
+    def _send_read_node(self) -> None:
+        """
+        @brief 请求读取当前选中电机节点 ID。
+        @return None
+        """
+        self._send_simple_selected(MOTOR_CMD_READ_NODE_ID)
+
+    def _send_read_selected(self) -> None:
+        """
+        @brief 请求读取当前选中电机常用信息。
+        @return None
+        """
+        try:
+            node_id = self._selected_node_id()
+            self._send_read_info_for_node(node_id)
+            self._append_log(f"tx node=0x{node_id:02X} read selected")
+        except Exception as exc:
+            messagebox.showerror("发送失败", str(exc))
+
+    def _send_read_all(self) -> None:
+        """
+        @brief 请求读取全部已知电机常用信息。
+        @return None
+        """
+        try:
+            for node_id in (0x01, 0x02, 0x03):
+                self._send_read_info_for_node(node_id)
+                time.sleep(0.004)
+
+            self._append_log("tx read all motors")
+        except Exception as exc:
+            messagebox.showerror("发送失败", str(exc))
+
+    def _send_read_info_for_node(self, node_id: int) -> None:
+        """
+        @brief 请求读取指定电机常用信息。
+        @param node_id 节点 ID。
+        @return None
+        """
+        for command in (
+            MOTOR_CMD_READ_NODE_ID,
+            MOTOR_CMD_READ_APP_VERSION,
+            MOTOR_CMD_READ_REPORT_CONFIG,
+        ):
+            self.client.send_simple_command(node_id, command)
+            self._record_tx(node_id)
+            time.sleep(0.002)
+
+    def _send_simple_selected(self, command: int) -> None:
+        """
+        @brief 向当前选中电机发送无参数命令。
+        @param command 命令码。
+        @return None
+        """
+        try:
+            node_id = self._selected_node_id()
+            self.client.send_simple_command(node_id, command)
+            self._record_tx(node_id)
+            self._append_log(f"tx node=0x{node_id:02X} {command_text(command)}")
         except Exception as exc:
             messagebox.showerror("发送失败", str(exc))
 
@@ -990,8 +1335,8 @@ class GimbalToolApp:
             if isinstance(event, MotorReportEvent):
                 self._handle_motor_report(event)
 
-            if isinstance(event, PidResponseEvent):
-                self._handle_pid_response(event)
+            if isinstance(event, MotorAckEvent):
+                self._handle_motor_ack(event)
 
             if isinstance(event, ErrorEvent):
                 self._append_log(f"ERROR: {event.message}")
@@ -1004,48 +1349,54 @@ class GimbalToolApp:
         @param event 电机主动上报事件。
         @return None
         """
-        state = self.motor_states.get(event.node_id)
-
-        if state is None:
-            return
-
+        state = self._get_or_create_state(event.node_id)
         state.position_mrad = event.position_mrad
         state.speed_mrad_s = event.speed_mrad_s
-        state.last_update_ms = event.timestamp_ms
-        state.rx_count += 1
+        state.last_report_ms = event.timestamp_ms
+        state.report_count += 1
         self._append_chart_sample(event)
 
-    def _handle_pid_response(self, event: PidResponseEvent) -> None:
+    def _handle_motor_ack(self, event: MotorAckEvent) -> None:
         """
-        @brief 处理 PID 调试响应事件。
-        @param event PID 调试响应事件。
+        @brief 处理电机应答事件。
+        @param event 电机应答事件。
         @return None
         """
-        axis_name = find_key_by_value(PID_AXIS_IDS, event.axis_id)
-        status = GIMBAL_STATUS_TEXT.get(event.status, str(event.status))
+        state = self._get_or_create_state(event.node_id)
+        state.last_ack_cmd = event.command
+        state.last_ack_status = event.status
+        state.last_ack_ms = event.timestamp_ms
+        state.ack_count += 1
 
-        if event.command == GIMBAL_CMD_SET_AXIS_TARGET:
-            self._append_log(
-                f"rsp cmd=0x{event.command:02X} status={status} "
-                f"axis={axis_name} target={event.value}"
-            )
-            return
-
-        loop_id = event.selector >> 4
-        field_id = event.selector & 0x0F
-        loop_name = find_key_by_value(PID_LOOP_IDS, loop_id)
-        field_name = find_key_by_value(PID_FIELD_IDS, field_id)
+        if event.status == 0:
+            self._update_state_from_ack(state, event)
 
         self._append_log(
-            f"rsp cmd=0x{event.command:02X} status={status} "
-            f"axis={axis_name} loop={loop_name} field={field_name} value={event.value}"
+            f"rx node=0x{event.node_id:02X} {command_text(event.command)} "
+            f"status={status_text(event.status)}"
         )
 
-        if event.status == 0 and event.command == GIMBAL_CMD_GET_PID_FIELD:
-            value_var = self.pid_value_vars.get(field_name)
+    def _update_state_from_ack(self, state: MotorState, event: MotorAckEvent) -> None:
+        """
+        @brief 根据应答内容更新状态。
+        @param state 电机状态对象。
+        @param event 电机应答事件。
+        @return None
+        """
+        data = event.payload
 
-            if value_var is not None:
-                value_var.set(str(event.value))
+        if event.command == MOTOR_CMD_READ_APP_VERSION and len(data) >= 5:
+            state.version = f"{data[2]}.{data[3]}.{data[4]}"
+            return
+
+        if event.command == MOTOR_CMD_READ_NODE_ID and len(data) >= 3:
+            state.reported_node_id = data[2]
+            return
+
+        if event.command in (MOTOR_CMD_SET_REPORT_CONFIG, MOTOR_CMD_READ_REPORT_CONFIG):
+            if len(data) >= 5:
+                state.report_enabled = data[2] != 0
+                state.report_period_ms = uint16_from_le(data[3:5])
 
     def _refresh_motor_table(self) -> None:
         """
@@ -1054,19 +1405,29 @@ class GimbalToolApp:
         """
         current_ms = now_monotonic_ms()
 
-        for node_id, state in self.motor_states.items():
-            if state.last_update_ms is None:
+        for node_id in sorted(self.motor_states.keys()):
+            state = self.motor_states[node_id]
+            self._ensure_table_item(node_id)
+
+            if state.last_report_ms is None:
                 age_text = "--"
             else:
-                age_text = str(current_ms - state.last_update_ms)
+                age_text = str(current_ms - state.last_report_ms)
 
+            ack = f"{command_text(state.last_ack_cmd)} {status_text(state.last_ack_status)}"
             self.motor_table.item(str(node_id),
+                                  text=state.name,
                                   values=(f"0x{node_id:02X}",
                                           format_optional_int(state.position_mrad),
                                           mrad_to_degree(state.position_mrad),
                                           format_optional_int(state.speed_mrad_s),
                                           age_text,
-                                          str(state.rx_count)))
+                                          str(state.report_count),
+                                          state.version,
+                                          report_config_text(state.report_enabled,
+                                                             state.report_period_ms),
+                                          ack,
+                                          str(state.tx_count)))
 
         self.root.after(100, self._refresh_motor_table)
 
@@ -1079,7 +1440,8 @@ class GimbalToolApp:
         history = self.chart_history.get(event.node_id)
 
         if history is None:
-            return
+            history = deque()
+            self.chart_history[event.node_id] = history
 
         history.append((event.timestamp_ms, event.position_mrad, event.speed_mrad_s))
 
@@ -1088,10 +1450,20 @@ class GimbalToolApp:
         while len(history) > 0 and history[0][0] < cutoff_ms:
             history.popleft()
 
+    def _selected_chart_node_id(self) -> int:
+        """
+        @brief 获取曲线当前选中的电机节点 ID。
+        @return int 电机节点 ID。
+        """
+        try:
+            return self._selected_node_id()
+        except Exception:
+            return 0x01
+
     def _get_chart_window_ms(self) -> int:
         """
         @brief 获取曲线显示窗口长度。
-        @return 曲线显示窗口长度，单位 ms。
+        @return int 曲线显示窗口长度，单位 ms。
         """
         try:
             window_seconds = float(self.chart_window_var.get().strip())
@@ -1114,7 +1486,7 @@ class GimbalToolApp:
         """
         @brief 抽样曲线历史数据。
         @param history 曲线历史数据。
-        @return 抽样后的曲线历史数据。
+        @return list[tuple[int, int, int]] 抽样后的曲线历史数据。
         """
         if len(history) <= CHART_MAX_DRAW_POINTS:
             return history
@@ -1141,7 +1513,7 @@ class GimbalToolApp:
 
     def _refresh_chart(self) -> None:
         """
-        @brief 刷新当前轴位置和速度曲线。
+        @brief 刷新当前电机位置和速度曲线。
         @return None
         """
         self._draw_chart()
@@ -1149,13 +1521,17 @@ class GimbalToolApp:
 
     def _draw_chart(self) -> None:
         """
-        @brief 绘制当前轴位置和速度曲线。
+        @brief 绘制当前电机位置和速度曲线。
         @return None
         """
-        axis_name = self.axis_var.get()
-        axis_id = PID_AXIS_IDS.get(axis_name, 0)
-        node_id = self._node_id_from_axis_id(axis_id)
-        history = self.chart_history.get(node_id, [])
+        node_id = self._selected_chart_node_id()
+        state = self.motor_states.get(node_id)
+        motor_name = node_label_from_id(node_id)
+
+        if state is not None:
+            motor_name = state.name
+
+        history = self.chart_history.get(node_id, deque())
         canvas = self.chart_canvas
         width = max(canvas.winfo_width(), 400)
         height = max(canvas.winfo_height(), 160)
@@ -1171,7 +1547,7 @@ class GimbalToolApp:
         canvas.create_rectangle(0, 0, width, height, fill="#111827", outline="")
         canvas.create_text(left,
                            8,
-                           text=f"{axis_name} position/speed {window_ms / 1000.0:g}s",
+                           text=f"{motor_name} position/speed {window_ms / 1000.0:g}s",
                            fill="#e5e7eb",
                            anchor="nw")
 
@@ -1295,20 +1671,6 @@ class GimbalToolApp:
                            fill=color,
                            anchor="se")
 
-    def _node_id_from_axis_id(self, axis_id: int) -> int:
-        """
-        @brief 将云台轴编号转换为电机节点 ID。
-        @param axis_id 云台轴编号。
-        @return int 电机节点 ID。
-        """
-        if axis_id == PID_AXIS_IDS["pitch"]:
-            return 0x01
-
-        if axis_id == PID_AXIS_IDS["yaw"]:
-            return 0x02
-
-        return 0x03
-
     def _append_log(self, text: str) -> None:
         """
         @brief 向日志窗口追加一行文本。
@@ -1349,7 +1711,7 @@ def parse_args() -> argparse.Namespace:
     @brief 解析命令行参数。
     @return argparse.Namespace 命令行参数。
     """
-    parser = argparse.ArgumentParser(description="Duck Mid PCAN gimbal tool")
+    parser = argparse.ArgumentParser(description="Duck Mid PCAN motor tool")
     parser.add_argument("--channel",
                         default=PCAN_DEFAULT_CHANNEL_NAME,
                         help="PCAN channel name or hex value, default: PCAN_USBBUS1")
@@ -1368,9 +1730,9 @@ def main() -> None:
     """
     args = parse_args()
     root = tk.Tk()
-    GimbalToolApp(root,
-                  default_channel=channel_value_from_label(args.channel),
-                  default_bitrate=args.bitrate)
+    MotorToolApp(root,
+                 default_channel=channel_value_from_label(args.channel),
+                 default_bitrate=args.bitrate)
     root.mainloop()
 
 

@@ -13,7 +13,7 @@
 
 ## 2. 启动
 
-默认使用 PCAN USB1，也就是 `PCAN_USBBUS1 (0x51)`，波特率 `500K`：
+默认使用 PCAN USB1，也就是 `PCAN_USBBUS1 (0x51)`，波特率 `1M`：
 
 ```powershell
 python project/duck-mid-f103/scripts/pcan_gimbal_tool.py
@@ -22,7 +22,7 @@ python project/duck-mid-f103/scripts/pcan_gimbal_tool.py
 指定通道和波特率：
 
 ```powershell
-python project/duck-mid-f103/scripts/pcan_gimbal_tool.py --channel PCAN_USBBUS1 --bitrate 500K
+python project/duck-mid-f103/scripts/pcan_gimbal_tool.py --channel PCAN_USBBUS1 --bitrate 1M
 ```
 
 如果连接时报 `The value of a handle ... is invalid`，说明选择的 PCAN 通道号在当前电脑上不存在。可以先点击界面上的“扫描”，工具会尝试打开 `PCAN_USBBUS1~PCAN_USBBUS16` 并列出可用通道。
