@@ -45,5 +45,11 @@
 			node-id = <0x03>;
 			report-period-ms = <2>;
 		};
+
+		z {
+			motor-name = "z";
+			node-id = <0x04>;
+			report-period-ms = <2>;
+		};
 	};
 };

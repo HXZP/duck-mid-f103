@@ -62,7 +62,7 @@ typedef enum
 } Gimbal_SpeedFeedbackSource_t;
 
 /**
- * @brief PID 配置。
+ * @brief PID 可调配置。
  */
 typedef struct
 {
@@ -72,25 +72,52 @@ typedef struct
     int32_t ki;
     /**< 微分增益，按 GIMBAL_PID_GAIN_SCALE 缩放。 */
     int32_t kd;
+    /**< 积分限幅百分比，主要用于 CAN 调参与 Ozone 观察。 */
+    uint32_t integral_limit_percent;
+    /**< 输出限幅百分比，主要用于 CAN 调参与 Ozone 观察。 */
+    uint32_t output_limit_percent;
     /**< 积分限幅，0 表示不积分。 */
     int32_t integral_limit;
     /**< 输出限幅，0 表示不限制。 */
     int32_t output_limit;
-} Gimbal_PidConfig_t;
+} Gimbal_PidSetting_t;
+
+/**
+ * @brief PID 运行数据。
+ */
+typedef struct
+{
+    /**< 当前误差。 */
+    int32_t error;
+    /**< 上一次误差。 */
+    int32_t last_error;
+    /**< 当前微分项。 */
+    int32_t derivative;
+    /**< 当前积分项。 */
+    int32_t integral;
+    /**< 未限幅输出。 */
+    int64_t raw_output;
+    /**< 限幅后输出。 */
+    int32_t output;
+    /**< 最近一次更新时间，单位毫秒。 */
+    uint32_t last_update_ms;
+    /**< PID 更新次数。 */
+    uint32_t update_count;
+    /**< 上一次误差是否有效。 */
+    bool last_error_valid;
+} Gimbal_PidRuntime_t;
 
 /**
  * @brief PID 运行对象。
  */
 typedef struct
 {
-    /**< PID 配置。 */
-    Gimbal_PidConfig_t config;
-    /**< 积分项。 */
-    int32_t integral;
-    /**< 上一次误差。 */
-    int32_t last_error;
-    /**< 上一次误差是否有效。 */
-    bool last_error_valid;
+    /**< PID 名称。 */
+    const char *name;
+    /**< PID 可调配置。 */
+    Gimbal_PidSetting_t setting;
+    /**< PID 运行数据。 */
+    Gimbal_PidRuntime_t runtime;
 } Gimbal_Pid_t;
 
 /**
@@ -107,9 +134,9 @@ typedef struct
     /**< 速度反馈来源。 */
     Gimbal_SpeedFeedbackSource_t speed_feedback_source;
     /**< 位置环 PID 配置。 */
-    Gimbal_PidConfig_t position_pid;
+    Gimbal_PidSetting_t position_pid;
     /**< 速度环 PID 配置。 */
-    Gimbal_PidConfig_t speed_pid;
+    Gimbal_PidSetting_t speed_pid;
 } Gimbal_AxisConfig_t;
 
 /**
@@ -288,7 +315,7 @@ static const Gimbal_AxisConfig_t gimbal_axis_configs[GIMBAL_AXIS_COUNT] = {
 static const Gimbal_ControllerConfig_t gimbal_default_config = {
     .name = "gimbal",
     .gen_motor_dev = DEVICE_DT_GET(GIMBAL_GEN_MOTOR_NODE),
-    .speed_control_period_ms = 2U,
+    .speed_control_period_ms = 5U,
     .position_control_period_ms = 10U,
     .attitude_timeout_ms = 100U,
     .full_circle_mrad = 6283,
@@ -441,26 +468,28 @@ static void gimbal_pid_reset(Gimbal_Pid_t *pid)
         return;
     }
 
-    pid->integral = 0;
-    pid->last_error = 0;
-    pid->last_error_valid = false;
+    memset(&pid->runtime, 0, sizeof(pid->runtime));
 }
 
 /**
  * @brief 初始化 PID 对象。
  * @param pid PID 对象。
- * @param config PID 配置。
+ * @param name PID 名称。
+ * @param setting PID 可调配置。
  * @return int 0 表示成功，负值表示失败。
  */
-static int gimbal_pid_init(Gimbal_Pid_t *pid, const Gimbal_PidConfig_t *config)
+static int gimbal_pid_init(Gimbal_Pid_t *pid,
+                           const char *name,
+                           const Gimbal_PidSetting_t *setting)
 {
-    if ((pid == NULL) || (config == NULL))
+    if ((pid == NULL) || (setting == NULL))
     {
         return -EINVAL;
     }
 
     memset(pid, 0, sizeof(*pid));
-    pid->config = *config;
+    pid->name = name;
+    pid->setting = *setting;
 
     return 0;
 }
@@ -570,15 +599,15 @@ static int32_t gimbal_get_output_limit_base(const Gimbal_ControllerConfig_t *con
  * @param controller_config 云台控制器配置。
  * @param loop PID 环类型。
  * @param percent_config PID 百分比配置。
- * @param pid_config 输出内部 PID 配置。
+ * @param setting 输出 PID 可调配置。
  * @return int 0 表示成功，负值表示失败。
  */
-static int gimbal_pid_config_from_percent(const Gimbal_ControllerConfig_t *controller_config,
-                                          enum gimbal_pid_loop loop,
-                                          const struct gimbal_pid_percent_config *percent_config,
-                                          Gimbal_PidConfig_t *pid_config)
+static int gimbal_pid_setting_from_percent(const Gimbal_ControllerConfig_t *controller_config,
+                                           enum gimbal_pid_loop loop,
+                                           const struct gimbal_pid_percent_config *percent_config,
+                                           Gimbal_PidSetting_t *setting)
 {
-    if ((controller_config == NULL) || (percent_config == NULL) || (pid_config == NULL))
+    if ((controller_config == NULL) || (percent_config == NULL) || (setting == NULL))
     {
         return -EINVAL;
     }
@@ -588,13 +617,15 @@ static int gimbal_pid_config_from_percent(const Gimbal_ControllerConfig_t *contr
         return -EINVAL;
     }
 
-    pid_config->kp = percent_config->kp;
-    pid_config->ki = percent_config->ki;
-    pid_config->kd = percent_config->kd;
-    pid_config->integral_limit =
+    setting->kp = percent_config->kp;
+    setting->ki = percent_config->ki;
+    setting->kd = percent_config->kd;
+    setting->integral_limit_percent = percent_config->integral_limit_percent;
+    setting->output_limit_percent = percent_config->output_limit_percent;
+    setting->integral_limit =
         gimbal_percent_to_limit(percent_config->integral_limit_percent,
                                 gimbal_get_integral_limit_base(controller_config, loop));
-    pid_config->output_limit =
+    setting->output_limit =
         gimbal_percent_to_limit(percent_config->output_limit_percent,
                                 gimbal_get_output_limit_base(controller_config, loop));
 
@@ -605,16 +636,16 @@ static int gimbal_pid_config_from_percent(const Gimbal_ControllerConfig_t *contr
  * @brief 将内部 PID 配置换算为百分比配置。
  * @param controller_config 云台控制器配置。
  * @param loop PID 环类型。
- * @param pid_config 内部 PID 配置。
+ * @param setting PID 可调配置。
  * @param percent_config 输出 PID 百分比配置。
  * @return int 0 表示成功，负值表示失败。
  */
-static int gimbal_pid_config_to_percent(const Gimbal_ControllerConfig_t *controller_config,
-                                        enum gimbal_pid_loop loop,
-                                        const Gimbal_PidConfig_t *pid_config,
-                                        struct gimbal_pid_percent_config *percent_config)
+static int gimbal_pid_setting_to_percent(const Gimbal_ControllerConfig_t *controller_config,
+                                         enum gimbal_pid_loop loop,
+                                         const Gimbal_PidSetting_t *setting,
+                                         struct gimbal_pid_percent_config *percent_config)
 {
-    if ((controller_config == NULL) || (pid_config == NULL) || (percent_config == NULL))
+    if ((controller_config == NULL) || (setting == NULL) || (percent_config == NULL))
     {
         return -EINVAL;
     }
@@ -624,15 +655,31 @@ static int gimbal_pid_config_to_percent(const Gimbal_ControllerConfig_t *control
         return -EINVAL;
     }
 
-    percent_config->kp = pid_config->kp;
-    percent_config->ki = pid_config->ki;
-    percent_config->kd = pid_config->kd;
-    percent_config->integral_limit_percent =
-        gimbal_limit_to_percent(pid_config->integral_limit,
-                                gimbal_get_integral_limit_base(controller_config, loop));
-    percent_config->output_limit_percent =
-        gimbal_limit_to_percent(pid_config->output_limit,
-                                gimbal_get_output_limit_base(controller_config, loop));
+    percent_config->kp = setting->kp;
+    percent_config->ki = setting->ki;
+    percent_config->kd = setting->kd;
+
+    if (setting->integral_limit_percent > 0U)
+    {
+        percent_config->integral_limit_percent = setting->integral_limit_percent;
+    }
+    else
+    {
+        percent_config->integral_limit_percent =
+            gimbal_limit_to_percent(setting->integral_limit,
+                                    gimbal_get_integral_limit_base(controller_config, loop));
+    }
+
+    if (setting->output_limit_percent > 0U)
+    {
+        percent_config->output_limit_percent = setting->output_limit_percent;
+    }
+    else
+    {
+        percent_config->output_limit_percent =
+            gimbal_limit_to_percent(setting->output_limit,
+                                    gimbal_get_output_limit_base(controller_config, loop));
+    }
 
     return 0;
 }
@@ -646,38 +693,49 @@ static int gimbal_pid_config_to_percent(const Gimbal_ControllerConfig_t *control
 static int32_t gimbal_pid_update(Gimbal_Pid_t *pid, int32_t error)
 {
     int32_t derivative = 0;
-    int64_t output;
+    int32_t last_error = 0;
+    int64_t raw_output;
+    int32_t output;
 
     if (pid == NULL)
     {
         return 0;
     }
 
-    if (pid->config.integral_limit > 0)
+    if (pid->runtime.last_error_valid)
     {
-        pid->integral = gimbal_clamp_symmetric_i64((int64_t)pid->integral + error,
-                                                   pid->config.integral_limit);
+        last_error = pid->runtime.error;
+        derivative = error - last_error;
+    }
+
+    if (pid->setting.integral_limit > 0)
+    {
+        pid->runtime.integral =
+            gimbal_clamp_symmetric_i64((int64_t)pid->runtime.integral + error,
+                                       pid->setting.integral_limit);
     }
     else
     {
-        pid->integral = 0;
+        pid->runtime.integral = 0;
     }
 
-    if (pid->last_error_valid)
-    {
-        derivative = error - pid->last_error;
-    }
-
-    pid->last_error = error;
-    pid->last_error_valid = true;
-
-    output =
-        (((int64_t)error * pid->config.kp) +
-         ((int64_t)pid->integral * pid->config.ki) +
-         ((int64_t)derivative * pid->config.kd)) /
+    raw_output =
+        (((int64_t)error * pid->setting.kp) +
+         ((int64_t)pid->runtime.integral * pid->setting.ki) +
+         ((int64_t)derivative * pid->setting.kd)) /
         GIMBAL_PID_GAIN_SCALE;
+    output = gimbal_clamp_symmetric_i64(raw_output, pid->setting.output_limit);
 
-    return gimbal_clamp_symmetric_i64(output, pid->config.output_limit);
+    pid->runtime.error = error;
+    pid->runtime.last_error = last_error;
+    pid->runtime.derivative = derivative;
+    pid->runtime.raw_output = raw_output;
+    pid->runtime.output = output;
+    pid->runtime.last_update_ms = k_uptime_get_32();
+    pid->runtime.update_count++;
+    pid->runtime.last_error_valid = true;
+
+    return output;
 }
 
 /**
@@ -1464,14 +1522,14 @@ static int gimbal_axis_init(Gimbal_Controller_t *controller, enum gimbal_axis_id
     axis->config = axis_config;
     axis->motor = motor;
 
-    ret = gimbal_pid_init(&axis->position_pid, &axis_config->position_pid);
+    ret = gimbal_pid_init(&axis->position_pid, "position", &axis_config->position_pid);
 
     if (ret < 0)
     {
         return ret;
     }
 
-    ret = gimbal_pid_init(&axis->speed_pid, &axis_config->speed_pid);
+    ret = gimbal_pid_init(&axis->speed_pid, "speed", &axis_config->speed_pid);
 
     if (ret < 0)
     {
@@ -1663,7 +1721,7 @@ int gimbal_set_pid_percent_config(enum gimbal_axis_id axis_id,
                                   const struct gimbal_pid_percent_config *config)
 {
     Gimbal_Controller_t *controller = &gimbal_controller;
-    Gimbal_PidConfig_t pid_config;
+    Gimbal_PidSetting_t pid_setting;
     Gimbal_Pid_t *pid;
     int ret;
 
@@ -1677,7 +1735,7 @@ int gimbal_set_pid_percent_config(enum gimbal_axis_id axis_id,
         return -EINVAL;
     }
 
-    ret = gimbal_pid_config_from_percent(controller->config, loop, config, &pid_config);
+    ret = gimbal_pid_setting_from_percent(controller->config, loop, config, &pid_setting);
 
     if (ret < 0)
     {
@@ -1693,7 +1751,7 @@ int gimbal_set_pid_percent_config(enum gimbal_axis_id axis_id,
         return -EINVAL;
     }
 
-    pid->config = pid_config;
+    pid->setting = pid_setting;
     gimbal_pid_reset(pid);
     k_mutex_unlock(&controller->lock);
 
@@ -1712,7 +1770,7 @@ int gimbal_get_pid_percent_config(enum gimbal_axis_id axis_id,
                                   struct gimbal_pid_percent_config *config)
 {
     Gimbal_Controller_t *controller = &gimbal_controller;
-    Gimbal_PidConfig_t pid_config;
+    Gimbal_PidSetting_t pid_setting;
     Gimbal_Pid_t *pid;
     int ret;
 
@@ -1735,10 +1793,10 @@ int gimbal_get_pid_percent_config(enum gimbal_axis_id axis_id,
         return -EINVAL;
     }
 
-    pid_config = pid->config;
+    pid_setting = pid->setting;
     k_mutex_unlock(&controller->lock);
 
-    ret = gimbal_pid_config_to_percent(controller->config, loop, &pid_config, config);
+    ret = gimbal_pid_setting_to_percent(controller->config, loop, &pid_setting, config);
 
     if (ret < 0)
     {
